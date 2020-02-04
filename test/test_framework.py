@@ -9,8 +9,10 @@ from pathlib import Path
 
 from ops.framework import (
     Framework, Handle, EventSource, EventsBase, EventBase, Object, PreCommitEvent, CommitEvent,
-    NoSnapshotError, StoredState, StoredList, BoundStoredState, StoredStateData
+    NoSnapshotError, SQLiteStorage, StoredState, StoredList, BoundStoredState, StoredStateData
 )
+
+from ops.testing import MemoryStorage
 
 
 class TestFramework(unittest.TestCase):
@@ -20,7 +22,8 @@ class TestFramework(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmpdir)
 
     def create_framework(self):
-        framework = Framework(self.tmpdir / "framework.data", self.tmpdir, None, None)
+        storage = SQLiteStorage(self.tmpdir / "framework.data")
+        framework = Framework(storage, self.tmpdir, None, None)
         self.addCleanup(framework.close)
         return framework
 
@@ -726,7 +729,8 @@ class TestStoredState(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmpdir)
 
     def create_framework(self, cls=Framework):
-        framework = cls(self.tmpdir / "framework.data", self.tmpdir, None, None)
+        storage = SQLiteStorage(self.tmpdir / "framework.data")
+        framework = cls(storage, self.tmpdir, None, None)
         self.addCleanup(framework.close)
         return framework
 
@@ -947,8 +951,8 @@ class TestStoredState(unittest.TestCase):
             state = StoredState()
 
         class WrappedFramework(Framework):
-            def __init__(self, data_path, charm_dir, meta, model):
-                super().__init__(data_path, charm_dir, meta, model)
+            def __init__(self, storage, charm_dir, meta, model):
+                super().__init__(storage, charm_dir, meta, model)
                 self.snapshots = []
 
             def save_snapshot(self, value):

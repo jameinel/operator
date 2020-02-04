@@ -396,11 +396,10 @@ class Framework(Object):
     meta = None
     charm_dir = None
 
-    def __init__(self, data_path, charm_dir, meta, model):
+    def __init__(self, storage, charm_dir, meta, model):
 
         super().__init__(self, None)
 
-        self._data_path = data_path
         self.charm_dir = charm_dir
         self.meta = meta
         self.model = model
@@ -410,7 +409,7 @@ class Framework(Object):
         self._type_registry = {}  # {(parent_path, kind): cls}
         self._type_known = set()  # {cls}
 
-        self._storage = SQLiteStorage(data_path)
+        self._storage = storage
 
         # We can't use the higher-level StoredState because it relies on events.
         self.register_type(StoredStateData, None, StoredStateData.handle_kind)

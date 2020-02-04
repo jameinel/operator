@@ -167,7 +167,8 @@ def main(charm_class):
     # the framework will commit the snapshot but Juju will not commit its
     # operation.
     charm_state_path = charm_dir / CHARM_STATE_FILE
-    framework = ops.framework.Framework(charm_state_path, charm_dir, meta, model)
+    storage = ops.framework.SQLiteStorage(charm_state_path)
+    framework = ops.framework.Framework(storage, charm_dir, meta, model)
     try:
         charm = charm_class(framework, None)
 
