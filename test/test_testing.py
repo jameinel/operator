@@ -23,6 +23,7 @@ from ops.framework import (
 )
 from ops.model import (
     ModelError,
+    RelationNotFoundError,
 )
 from ops.testing import TestingHarness, create_harness
 
@@ -30,7 +31,7 @@ from ops.testing import TestingHarness, create_harness
 class TestTestingHarness(unittest.TestCase):
 
     def test_add_relation(self):
-        harness = TestingHarness('test-unit/0')
+        harness = TestingHarness('test-unit/0', None)
         rel_id = harness.add_relation('db', 'postgresql')
         self.assertIsInstance(rel_id, int)
         backend = harness._get_backend()
@@ -38,7 +39,7 @@ class TestTestingHarness(unittest.TestCase):
         self.assertEqual([], backend.relation_list(rel_id))
 
     def test_add_relation_and_unit(self):
-        harness = TestingHarness('test-unit/0')
+        harness = TestingHarness('test-unit/0', None)
         remote_unit = 'postgresql/0'
         rel_id = harness.add_relation('db', 'postgresql', remote_app_data={'app': 'data'})
         self.assertIsInstance(rel_id, int)
@@ -50,7 +51,7 @@ class TestTestingHarness(unittest.TestCase):
         self.assertEqual({'app': 'data'}, backend.relation_get(rel_id, remote_unit, is_app=True))
 
     def test_read_relation_data(self):
-        harness = TestingHarness('test-app/0')
+        harness = TestingHarness('test-app/0', None)
         rel_id = harness.add_relation('db', 'postgresql',
                                       remote_app_data={'remote': 'data'})
         self.assertEqual(harness.read_relation_data(rel_id, 'test-app'), {})
@@ -62,6 +63,7 @@ class TestTestingHarness(unittest.TestCase):
             harness.read_relation_data(99, 'postgresql')
 
     def test_create_harness(self):
+        # language=YAML
         charm, harness = create_harness(CharmBase, '''
             name: my-charm
             requires:
@@ -76,12 +78,14 @@ class TestTestingHarness(unittest.TestCase):
         self.assertEqual(helper.changes, [(rel_id, 'postgresql')])
 
     def test_create_harness_twice(self):
+        # language=YAML
         charm1, harness1 = create_harness(CharmBase, '''
             name: my-charm
             requires:
               db:
                 interface: pgsql
             ''')
+        # language=YAML
         charm2, harness2 = create_harness(CharmBase, '''
             name: my-charm
             requires:
@@ -97,6 +101,7 @@ class TestTestingHarness(unittest.TestCase):
         self.assertEqual(helper2.changes, [(rel_id, 'postgresql')])
 
     def test_update_relation_exposes_new_data(self):
+        # language=YAML
         charm, harness = create_harness(CharmBase, '''
             name: my-charm
             requires:
@@ -112,6 +117,7 @@ class TestTestingHarness(unittest.TestCase):
         self.assertEqual(viewer.changes, [{'initial': 'data'}, {'initial': 'data', 'new': 'value'}])
 
     def test_update_relation_remove_data(self):
+        # language=YAML
         charm, harness = create_harness(CharmBase, '''
             name: my-charm
             requires:
@@ -125,6 +131,7 @@ class TestTestingHarness(unittest.TestCase):
         self.assertEqual(viewer.changes, [{'initial': 'data'}, {}])
 
     def test_update_config(self):
+        # language=YAML
         charm, harness = create_harness(RecordingCharm, '''
             name: my-charm
             ''')
@@ -141,6 +148,7 @@ class TestTestingHarness(unittest.TestCase):
                                          ])
 
     def test_set_leader(self):
+        # language=YAML
         charm, harness = create_harness(RecordingCharm, '''
             name: my-charm
             ''')
@@ -152,6 +160,7 @@ class TestTestingHarness(unittest.TestCase):
         self.assertTrue(charm.framework.model.unit.is_leader())
 
     def test_relation_set_app_not_leader(self):
+        # language=YAML
         charm, harness = create_harness(RecordingCharm, '''
             name: test-charm
             requires:
@@ -169,6 +178,82 @@ class TestTestingHarness(unittest.TestCase):
         harness.set_leader(True)
         rel.data[charm.framework.model.app]['foo'] = 'bar'
         self.assertEqual(harness.read_relation_data(rel_id, 'test-charm'), {'foo': 'bar'})
+
+    def test_relation_set_deletes(self):
+        # language=YAML
+        charm, harness = create_harness(RecordingCharm, '''
+            name: test-charm
+            requires:
+                db:
+                    interface: pgsql
+            ''')
+        harness.set_leader(False)
+        rel_id = harness.add_relation('db', 'postgresql', initial_unit_data={'foo': 'bar'})
+        harness.add_relation_unit(rel_id, 'postgresql/0')
+        rel = charm.model.get_relation('db', rel_id)
+        del rel.data[charm.model.unit]['foo']
+        self.assertEqual({}, harness.read_relation_data(rel_id, 'test-charm/0'))
+
+    def test_get_backend_calls(self):
+        # language=YAML
+        charm, harness = create_harness(RecordingCharm, '''
+            name: test-charm
+            requires:
+                db:
+                    interface: pgsql
+            ''')
+        # No calls to the backend yet
+        self.assertEqual([], harness.get_backend_calls())
+        rel_id = harness.add_relation('db', 'postgresql', initial_unit_data={'foo': 'bar'})
+        self.assertEqual([], harness.get_backend_calls())
+        # add_relation_unit resets the relation_list, and causes the Model to read it to fire `relation_changed`
+        harness.add_relation_unit(rel_id, 'postgresql/0')
+        self.assertEqual([
+            ('relation_ids', 'db'),
+            ('relation_list', rel_id),
+        ], harness.get_backend_calls())
+        # If we check again, they are still there, but now we reset it
+        self.assertEqual([
+            ('relation_ids', 'db'),
+            ('relation_list', rel_id),
+        ], harness.get_backend_calls(reset=True))
+        # And the calls are gone
+        self.assertEqual([], harness.get_backend_calls())
+
+
+class Test_TestingModelBackend(unittest.TestCase):
+
+    def test_relation_ids_unknown_relation(self):
+        charm, harness = create_harness(CharmBase, '''
+            name: test-charm
+            provides:
+              db:
+                interface: mydb
+            ''')
+        backend = harness._get_backend()
+        # With no relations added, we just get an empty list for the interface
+        self.assertEqual(backend.relation_ids('db'), [])
+        # But an unknown interface raises a ModelError
+        with self.assertRaises(ModelError):
+            backend.relation_ids('unknown')
+
+    def test_relation_get_unknown_relation_id(self):
+        # language=YAML
+        charm, harness = create_harness(CharmBase, '''
+            name: test-charm
+            ''')
+        backend = harness._get_backend()
+        with self.assertRaises(RelationNotFoundError):
+            backend.relation_get(1234, 'unit/0', False)
+
+    def test_relation_list_unknown_relation_id(self):
+        # language=YAML
+        charm, harness = create_harness(CharmBase, '''
+            name: test-charm
+            ''')
+        backend = harness._get_backend()
+        with self.assertRaises(RelationNotFoundError):
+            backend.relation_list(1234)
 
 
 class DBRelationChangedHelper(Object):

@@ -14,10 +14,13 @@
 
 from textwrap import dedent
 
-from ops import charm, framework, model
+from ops.charm import (
+    CharmMeta
+)
+from ops import framework, model
 
 
-def create_harness(charm_cls, charm_meta_yaml):
+def create_harness(charm_cls, charm_meta_yaml, unit_number=0):
     """Used for testing your Charm or component implementations.
 
     This ensures that you have an instance of `charm_cls` that can be driven by a TestingHarness.
@@ -36,9 +39,11 @@ def create_harness(charm_cls, charm_meta_yaml):
 
     :param charm_cls: The Charm class that should be tested. If you are just testing a component,
         you can pass in ops.charm.CharmBase.
-    :rtype charm_cls: CharmBase
+    :type charm_cls: CharmBase
     :param charm_meta_yaml: The YAML metadata for the charm, defining interfaces, name, etc.
         This can be either a string or a file.
+    :param unit_number: Optional unit number for this unit (defaults to 0)
+    :type unit_number: int
     :return: (charm, harness)
     :rtype: (CharmBase, TestingHarness)
     """
@@ -46,7 +51,7 @@ def create_harness(charm_cls, charm_meta_yaml):
     #  it would define the default values of config that the charm would see.
     if isinstance(charm_meta_yaml, str):
         charm_meta_yaml = dedent(charm_meta_yaml)
-    meta = charm.CharmMeta.from_yaml(charm_meta_yaml)
+    meta = CharmMeta.from_yaml(charm_meta_yaml)
 
     # The Framework mutates class objects to build attributes for events, etc. That makes attribute access easy.
     # However, it means you can't register the same class with multiple framework
@@ -64,14 +69,15 @@ def create_harness(charm_cls, charm_meta_yaml):
     # TestCharm has no attribute foo. It does hide the fact that TestCharm exists, but that is probably for the best.
     TestCharm.__name__ = charm_cls.__name__
 
-    unit_name = meta.name + '/0'
-    harness = TestingHarness(unit_name)
+    unit_name = '{}/{}'.format(meta.name, unit_number)
+    harness = TestingHarness(unit_name, meta)
+    # noinspection PyProtectedMember
     the_model = model.Model(unit_name, meta, harness._get_backend())
     the_framework = framework.Framework(":memory:", "no-disk-path", meta, the_model)
-    the_charm = TestCharm(the_framework, meta.name)
+    charm = TestCharm(the_framework, meta.name)
     # noinspection PyProtectedMember
-    harness._register_charm(the_charm)
-    return the_charm, harness
+    harness._register_charm(charm)
+    return charm, harness
 
 
 # noinspection PyProtectedMember
@@ -83,10 +89,10 @@ class TestingHarness:
     :ivar _charm: CharmBase
     """
 
-    def __init__(self, unit_name):
+    def __init__(self, unit_name, meta):
         """Create a testing harness that can drive a Model"""
         self.unit_name = unit_name
-        self._backend = _TestingModelBackend(unit_name)
+        self._backend = _TestingModelBackend(unit_name, meta)
         self._relation_id_counter = 0
         self._charm = None
 
@@ -103,7 +109,7 @@ class TestingHarness:
         self._relation_id_counter += 1
         return rel_id
 
-    def add_relation(self, relation_name, remote_app, remote_app_data={}):
+    def add_relation(self, relation_name, remote_app, *, initial_app_data={}, initial_unit_data={}, remote_app_data={}):
         """Declare that there is a new relation between this app on and `remote_app` on interface `relation_name`.
 
         TODO: Once relation_created exists as a Juju hook, it should be triggered by this code.
@@ -111,6 +117,9 @@ class TestingHarness:
         :param relation_name: The relation on Charm that is having an application related to it.
         :param remote_app_data: Optional data bag that the remote application is sending to this charm.
           If remote_app_data is not empty, this should trigger ``charm.on[relation_name].relation_changed(app)``
+        :param remote_app: The name of the related app
+        :param initial_app_data: The initial application data for this app
+        :param initial_unit_data: The initial unit data for this app
         :return: The relation_id created by this add_relation.
         :rtype: int
         """
@@ -120,8 +129,8 @@ class TestingHarness:
         self._backend._relation_list_map[rel_id] = []
         self._backend._relation_data[rel_id] = {
             remote_app: remote_app_data,
-            self._backend.unit_name: {},
-            self._backend.app_name: {},
+            self._backend.unit_name: initial_unit_data,
+            self._backend.app_name: initial_app_data,
         }
         if self._charm is not None:
             # Reload the relation_ids list
@@ -129,7 +138,7 @@ class TestingHarness:
             # TODO: jam 2020-03-05 We should be triggering relation_changed(app) if remote_app_data isn't empty.
         return rel_id
 
-    def add_relation_unit(self, relation_id, remote_unit_name, remote_unit_data={}):
+    def add_relation_unit(self, relation_id, remote_unit_name, *, remote_unit_data={}):
         """Add a new unit to a relation.
 
         Example::
@@ -147,9 +156,12 @@ class TestingHarness:
             relation_changed is triggered.
         :type remote_unit_data: dict
         :return: None
+        :rtype: None
         """
         self._backend._relation_list_map[relation_id].append(remote_unit_name)
         self._backend._relation_data[relation_id][remote_unit_name] = remote_unit_data
+        # TODO: jam 2020-03-06 It would be slightly clearer if add_relation checked that the unit names matched the app
+        #       otherwise you get hard to understand failures.
         if self._charm is not None:
             relation_name = self._backend._relation_names[relation_id]
             # Make sure that the Model reloads the relation_list for this relation_id, as well as reloading the
@@ -175,7 +187,7 @@ class TestingHarness:
         :type app_or_unit: str
         :return: a dict containing the relation data for `app_or_unit` or None.
         :rtype: dict
-        :raises: KeyError if relation_id doesn't exist
+        :raises: KeyError
         """
         return self._backend._relation_data[relation_id].get(app_or_unit, None)
 
@@ -267,6 +279,21 @@ class TestingHarness:
         if is_leader and not was_leader and self._charm is not None:
             self._charm.on.leader_elected.emit()
 
+    def get_backend_calls(self, reset=False):
+        """Return the calls that we have made to the TestingModelBackend.
+
+        This is useful mostly for testing the framework itself, so that we can assert that we do/don't trigger extra
+        calls.
+
+        :param reset: If True, reset the calls list back to empty.
+        :type reset: bool
+        :return: [(call1, args...), (call2, args...)]
+        """
+        calls = self._backend._calls.copy()
+        if reset:
+            self._backend._calls.clear()
+        return calls
+
 
 class _TestingModelBackend:
     """This conforms to the interface for ModelBackend but provides canned data.
@@ -274,9 +301,11 @@ class _TestingModelBackend:
     You should not use this class directly, it is used by `TestingHarness`_ to drive the model.
     """
 
-    def __init__(self, unit_name):
+    def __init__(self, unit_name, meta):
         self.unit_name = unit_name
         self.app_name = self.unit_name.split('/')[0]
+        self._calls = []
+        self._meta = meta
 
         self._is_leader = None
         self._relation_ids_map = {}  # relation name to [relation_ids,...]
@@ -291,17 +320,31 @@ class _TestingModelBackend:
         self._unit_status = None
 
     def relation_ids(self, relation_name):
-        return self._relation_ids_map[relation_name]
+        self._calls.append(('relation_ids', relation_name))
+        try:
+            return self._relation_ids_map[relation_name]
+        except KeyError as e:
+            if relation_name not in self._meta.relations:
+                raise model.ModelError('{} is not a known relation'.format(relation_name)) from e
+            return []
 
     def relation_list(self, relation_id):
-        return self._relation_list_map[relation_id]
+        self._calls.append(('relation_list', relation_id))
+        try:
+            return self._relation_list_map[relation_id]
+        except KeyError as e:
+            raise model.RelationNotFoundError from e
 
     def relation_get(self, relation_id, member_name, is_app):
+        self._calls.append(('relation_get', relation_id, member_name, is_app))
         if is_app and '/' in member_name:
             member_name = member_name.split('/')[0]
+        if relation_id not in self._relation_data:
+            raise model.RelationNotFoundError()
         return self._relation_data[relation_id][member_name].copy()
 
     def relation_set(self, relation_id, key, value, is_app):
+        self._calls.append(('relation_set', relation_id, key, value, is_app))
         relation = self._relation_data[relation_id]
         if is_app:
             bucket_key = self.app_name
@@ -310,21 +353,29 @@ class _TestingModelBackend:
         if bucket_key not in relation:
             relation[bucket_key] = {}
         bucket = relation[bucket_key]
-        bucket[key] = value
+        if value == '':
+            bucket.pop(key, None)
+        else:
+            bucket[key] = value
 
     def config_get(self):
+        self._calls.append(('config-get',))
         return self._config
 
     def is_leader(self):
+        self._calls.append(('is_leader',))
         return self._is_leader
 
     def resource_get(self, resource_name):
+        self._calls.append(('resource_get', resource_name))
         return self._resources_map[resource_name]
 
     def pod_spec_set(self, spec, k8s_resources):
+        self._calls.append(('pod_spec_set', spec, k8s_resources))
         self._pod_spec = (spec, k8s_resources)
 
     def status_get(self, *, is_app=False):
+        self._calls.append(('status_get', {'is_app': is_app}))
         raise NotImplementedError(self.status_get)
         if is_app:
             return self._app_status
@@ -332,31 +383,40 @@ class _TestingModelBackend:
             return self._unit_status
 
     def status_set(self, status, message='', *, is_app=False):
+        self._calls.append(('status_set', status, message, {'is_app': is_app}))
         if is_app:
             self._app_status = (status, message)
         else:
             self._unit_status = (status, message)
 
     def storage_list(self, name):
+        self._calls.append(('storage_list', name))
         raise NotImplementedError(self.storage_list)
 
     def storage_get(self, storage_name_id, attribute):
+        self._calls.append(('storage_get', storage_name_id, attribute))
         raise NotImplementedError(self.storage_get)
 
     def storage_add(self, name, count=1):
+        self._calls.append(('storage_add', name, count))
         raise NotImplementedError(self.storage_add)
 
     def action_get(self):
+        self._calls.append(('action_get'))
         raise NotImplementedError(self.action_get)
 
     def action_set(self, results):
+        self._calls.append(('action_set', results))
         raise NotImplementedError(self.action_set)
 
     def action_log(self, message):
+        self._calls.append(('action_log', message))
         raise NotImplementedError(self.action_log)
 
     def action_fail(self, message=''):
+        self._calls.append(('action_fail', message))
         raise NotImplementedError(self.action_fail)
 
     def network_get(self, endpoint_name, relation_id=None):
+        self._calls.append(('network_get', endpoint_name, relation_id))
         raise NotImplementedError(self.network_get)
