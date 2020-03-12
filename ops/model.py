@@ -22,6 +22,7 @@ import datetime
 import re
 import ipaddress
 import decimal
+import socket
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, MutableMapping
@@ -825,6 +826,76 @@ class ModelBackend:
             metric_args.append('{}={}'.format(k, metric_value))
         cmd.extend(metric_args)
         self._run(*cmd)
+
+
+class _AgentSocket:
+
+    def __init__(self):
+        addr = os.getenv('JUJU_AGENT_SOCKET_ADDRESS')
+        proto = os.getenv('JUJU_AGENT_SOCKET_NETWORK')
+        # proto is either 'unix' or 'tcp', on IAAS proto is always 'unix'
+        # on Windows the address ends up as `\\.\pipe\UNIT-agent
+        # on K8s the proto ends up as 'tcp' for actions so they can dial back
+        # to the unit agent in a different pod.
+        if proto == 'unix':
+            # in Windows we should use Named Pipes
+            if os.name == 'nt':
+                f = open(addr, 'rb+', buffering=0)
+                # TODO: jam 2020-03-12, you should be able to use a named pipe as a file, but we'd want to make it
+                #  look like a Socket
+            else:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    s.connect(addr)
+                except socket.error as e:
+                    raise
+        elif proto == 'tcp':
+            # if we are using tcp, we also need to look at JUJU_AGENT_CA_CERT and
+            # JUJU_UNIT_NAME/JUJU_APPLICATION_NAME
+            s = socket.create_connection(addr)
+        else:
+            raise RuntimeError('unknown SOCKET_NETWORK: {}'.format(proto))
+        self.sock = s
+
+    def request(self, command, args):
+        # type Request struct {
+        #     ContextId   string
+        #     Dir         string
+        #     CommandName string
+        #     Args        []string
+        #
+        #     // StdinSet indicates whether or not the client supplied stdin. This is
+        #     // necessary as Stdin will be nil if the client supplied stdin but it
+        #     // is empty.
+        #     StdinSet bool
+        #     Stdin    []byte
+        #
+        #     Token string
+        # }
+        # // Call represents an active RPC.
+        # type Call struct {
+        #     ServiceMethod string      // The name of the service and method to call.
+        #     Args          interface{} // The argument to the function (*struct).
+        #     Reply         interface{} // The reply from the function (*struct).
+        #     Error         error       // After completion, the error status.
+        #     Done          chan *Call  // Strobes when call is complete.
+        # }
+        # type ExecResponse struct {
+        #     Code   int
+        # Stdout []byte
+        # Stderr []byte
+        # }
+        ServiceMethod = "Jujuc.Main"
+        req = _Request(
+            ServiceMethod="Jujuc.Main",
+            ContextId=os.getenv("JUJU_CONTEXT_ID"),
+            Dir=os.getcwd(),
+            CommandName=command,
+            Args=args,
+            StdinSet=False,
+            Stdin="",
+            Token=os.getenv("JUJU_AGENT_TOKEN"),  # only set on K8s
+        )
 
 
 class _ModelBackendValidator:
