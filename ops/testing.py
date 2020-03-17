@@ -14,112 +14,117 @@
 
 from textwrap import dedent
 
-from ops.charm import (
-    CharmMeta
-)
-from ops import framework, model
-
-
-def create_harness(charm_cls, charm_meta_yaml, unit_number=0):
-    """Used for testing your Charm or component implementations.
-
-    This ensures that you have an instance of `charm_cls` that can be driven by a TestingHarness.
-
-    Example::
-
-        charm, harness = create_harness(MyCharm, '''
-            name: my-charm
-            requires:
-              db:
-                interface: pgsql
-            ''')
-        relation_id = harness.add_relation('db', 'postgresql')
-        harness.add_relation_unit(relation_id, 'postgresql/0', remote_unit_data={'key': 'value'})
-        # Check that charm has properly handled the relation_joined event for postgresql/0
-
-    :param charm_cls: The Charm class that should be tested. If you are just testing a component,
-        you can pass in ops.charm.CharmBase.
-    :type charm_cls: CharmBase
-    :param charm_meta_yaml: The YAML metadata for the charm, defining interfaces, name, etc.
-        This can be either a string or a file.
-    :param unit_number: Optional unit number for this unit (defaults to 0)
-    :type unit_number: int
-    :return: (charm, harness)
-    :rtype: (CharmBase, TestingHarness)
-    """
-    # TODO: jam 2020-03-05 We probably want to take config as a parameter as well, since
-    #  it would define the default values of config that the charm would see.
-    if isinstance(charm_meta_yaml, str):
-        charm_meta_yaml = dedent(charm_meta_yaml)
-    meta = CharmMeta.from_yaml(charm_meta_yaml)
-
-    # The Framework mutates class objects to build attributes for events, etc. That makes attribute access easy.
-    # However, it means you can't register the same class with multiple framework
-    # instances. So instead we dynamically create a new event class and charm class
-    # and register those with the framework.
-    class TestEvents(charm_cls.on.__class__):
-        pass
-
-    TestEvents.__name__ = charm_cls.on.__class__.__name__
-
-    class TestCharm(charm_cls):
-        on = TestEvents()
-
-    # Note: jam 2020-03-01 This is so that errors in testing say MyCharm has no attribute foo, rather than
-    # TestCharm has no attribute foo. It does hide the fact that TestCharm exists, but that is probably for the best.
-    TestCharm.__name__ = charm_cls.__name__
-
-    unit_name = '{}/{}'.format(meta.name, unit_number)
-    harness = TestingHarness(unit_name, meta)
-    # noinspection PyProtectedMember
-    the_model = model.Model(unit_name, meta, harness._get_backend())
-    the_framework = framework.Framework(":memory:", "no-disk-path", meta, the_model)
-    charm = TestCharm(the_framework, meta.name)
-    # noinspection PyProtectedMember
-    harness._register_charm(charm)
-    return charm, harness
+from ops import charm, framework, model
 
 
 # noinspection PyProtectedMember
-class TestingHarness:
+class Harness:
     """This class represents a way to build up the model that will drive a test suite.
 
     The model that is created is from the viewpoint of the charm that you are testing.
 
-    :ivar _charm: CharmBase
+    :ivar _charm: The instance of Charm that is backed by this testing harness.
+    :type _charm: CharmBase
     """
 
-    def __init__(self, unit_name, meta):
-        """Create a testing harness that can drive a Model"""
+    def __init__(self, charm_meta_yaml, unit_number=0):
+        """Used for testing your Charm or component implementations.
+
+        Example::
+
+        harness = Harness('''
+                name: my-charm
+                requires:
+                  db:
+                    interface: pgsql
+                ''')
+        charm = harness.initialize(MyCharm)
+        harness.enable_events(charm)
+        relation_id = harness.add_relation('db', 'postgresql')
+        harness.add_relation_unit(relation_id, 'postgresql/0', remote_unit_data={'key': 'value'})
+        # Check that charm has properly handled the relation_joined event for postgresql/0
+        self.assertEqual(harness.charm.
+
+        :param charm_meta_yaml: The YAML metadata for the charm, defining interfaces, name, etc.
+            This can be either a string or a file.
+        :param unit_number: Optional unit number for this unit (defaults to 0)
+        :type unit_number: int
+        """
+        # TODO: jam 2020-03-05 We probably want to take config as a parameter as well, since
+        #       it would define the default values of config that the charm would see.
+        if isinstance(charm_meta_yaml, str):
+            charm_meta_yaml = dedent(charm_meta_yaml)
+        meta = charm.CharmMeta.from_yaml(charm_meta_yaml)
+        unit_name = '{}/{}'.format(meta.name, unit_number)
         self.unit_name = unit_name
         self._backend = _TestingModelBackend(unit_name, meta)
         self._relation_id_counter = 0
+        self._model = model.Model(unit_name, meta, self._backend)
+        self._framework = framework.Framework(":memory:", "no-disk-path", meta, self._model)
         self._charm = None
 
-    def _get_backend(self):
-        return self._backend
+    @property
+    def model(self):
+        return self._model
 
-    def _register_charm(self, charm):
-        if self._charm is not None:
-            raise RuntimeError("registering charm {} while {} is already registered".format(charm, self._charm))
-        self._charm = charm
+    @property
+    def framework(self):
+        return self._framework
+
+    def initialize(self, charm_cls):
+        """Instantiate the Charm class provided, using the Harness's framework and charm metadata.
+             :param charm_cls: The Charm class that should be tested. If you are just testing a
+              component, you can pass in ops.charm.CharmBase.
+          :type charm_cls: CharmBase
+        """
+
+        # The Framework adds attributes to class objects for events, etc. As such, we can't re-use
+        # the original class against multiple Frameworks. So create a locally defined class
+        # and register it.
+        # TODO: jam 2020-03-16 We are looking to changes this to Instance attributes instead of
+        #       Class attributes which should clean up this ugliness. The API can stay the same
+        class TestEvents(charm_cls.on.__class__):
+            pass
+
+        TestEvents.__name__ = charm_cls.on.__class__.__name__
+
+        class TestCharm(charm_cls):
+            on = TestEvents()
+
+        # Note: jam 2020-03-01 This is so that errors in testing say MyCharm has no attribute foo,
+        # rather than TestCharm has no attribute foo.
+        TestCharm.__name__ = charm_cls.__name__
+        return TestCharm(self._framework, self._framework.meta.name)
+
+    def enable_events(self, the_charm):
+        """Start triggering events for charm.on when the model is changed.
+
+        Once enable_events is passed the charm, any changes to the model (such as
+        `update_relation_data`) will trigger the associated events (`relation_changed`).
+
+        :param the_charm: A CharmBase instance that we will use to trigger events.
+        :return: None
+        """
+        self._charm = the_charm
 
     def _next_relation_id(self):
         rel_id = self._relation_id_counter
         self._relation_id_counter += 1
         return rel_id
 
-    def add_relation(self, relation_name, remote_app, *, initial_app_data={}, initial_unit_data={}, remote_app_data={}):
-        """Declare that there is a new relation between this app on and `remote_app` on interface `relation_name`.
+    def add_relation(self, relation_name, remote_app, *, initial_unit_data=None,
+                     initial_app_data=None, remote_app_data=None):
+        """Declare that there is a new relation between this app and `remote_app`.
 
         TODO: Once relation_created exists as a Juju hook, it should be triggered by this code.
 
-        :param relation_name: The relation on Charm that is having an application related to it.
-        :param remote_app_data: Optional data bag that the remote application is sending to this charm.
-          If remote_app_data is not empty, this should trigger ``charm.on[relation_name].relation_changed(app)``
-        :param remote_app: The name of the related app
-        :param initial_app_data: The initial application data for this app
-        :param initial_unit_data: The initial unit data for this app
+        :param relation_name: The relation on Charm that is being related to
+        :param remote_app: The name of the application that is being related to
+        :param initial_unit_data: Optional data bag that the local unit is sending
+        :param initial_app_data: Optional data bag that the local application is sending
+        :param remote_app_data: Optional data bag that the remote application is sending
+          If remote_app_data is not empty, this should trigger
+          ``charm.on[relation_name].relation_changed(app)``
         :return: The relation_id created by this add_relation.
         :rtype: int
         """
@@ -127,18 +132,26 @@ class TestingHarness:
         self._backend._relation_ids_map.setdefault(relation_name, []).append(rel_id)
         self._backend._relation_names[rel_id] = relation_name
         self._backend._relation_list_map[rel_id] = []
+        if initial_unit_data is None:
+            initial_unit_data = {}
+        if initial_app_data is None:
+            initial_app_data = {}
+        if remote_app_data is None:
+            remote_app_data = {}
         self._backend._relation_data[rel_id] = {
             remote_app: remote_app_data,
             self._backend.unit_name: initial_unit_data,
             self._backend.app_name: initial_app_data,
         }
-        if self._charm is not None:
-            # Reload the relation_ids list
-            self._charm.framework.model.relations._invalidate(relation_name)
-            # TODO: jam 2020-03-05 We should be triggering relation_changed(app) if remote_app_data isn't empty.
+        # Reload the relation_ids list
+        self.model.relations._invalidate(relation_name)
+        if self._charm is None:
+            return rel_id
+        # TODO: jam 2020-03-05 We should be triggering relation_changed(app) if
+        #       remote_app_data isn't empty.
         return rel_id
 
-    def add_relation_unit(self, relation_id, remote_unit_name, *, remote_unit_data={}):
+    def add_relation_unit(self, relation_id, remote_unit_name, *, remote_unit_data=None):
         """Add a new unit to a relation.
 
         Example::
@@ -149,37 +162,42 @@ class TestingHarness:
         This will trigger a `relation_joined` event and a `relation_changed` event.
 
         :param relation_id: The integer relation identifier (as returned by add_relation).
-        :type relation_id: str
+        :type relation_id: int
         :param remote_unit_name: A string representing the remote unit that is being added.
         :type remote_unit_name: str
-        :param remote_unit_data: Optional data bag containing data that will be seeded in relation data before
-            relation_changed is triggered.
+        :param remote_unit_data: Optional data bag containing data that will be seeded in
+            relation data before relation_changed is triggered.
         :type remote_unit_data: dict
         :return: None
         :rtype: None
         """
         self._backend._relation_list_map[relation_id].append(remote_unit_name)
+        if remote_unit_data is None:
+            remote_unit_data = {}
         self._backend._relation_data[relation_id][remote_unit_name] = remote_unit_data
-        # TODO: jam 2020-03-06 It would be slightly clearer if add_relation checked that the unit names matched the app
-        #       otherwise you get hard to understand failures.
-        if self._charm is not None:
-            relation_name = self._backend._relation_names[relation_id]
-            # Make sure that the Model reloads the relation_list for this relation_id, as well as reloading the
-            # relation data for this unit.
-            self._charm.framework.model.relations._invalidate(relation_name)
-            remote_unit = self._charm.model.get_unit(remote_unit_name)
-            relation = self._charm.framework.model.get_relation(relation_name, relation_id)
-            relation.data[remote_unit]._invalidate()
-            self._charm.on[relation_name].relation_joined.emit(relation, remote_unit.app, remote_unit)
-            # TODO: jam 2020-03-05 Do we only emit relation_changed if remote_unit_data isn't empty?
-            #  juju itself always triggers relation_changed immediately after relation_joined
-            self._charm.on[relation_name].relation_changed.emit(relation, remote_unit.app, remote_unit)
+        relation_name = self._backend._relation_names[relation_id]
+        # Make sure that the Model reloads the relation_list for this relation_id, as well as
+        # reloading the relation data for this unit.
+        self.model.relations._invalidate(relation_name)
+        if self._charm is None:
+            return
+        remote_unit = self.model.get_unit(remote_unit_name)
+        relation = self.model.get_relation(relation_name, relation_id)
+        relation.data[remote_unit]._invalidate()
+        self._charm.on[relation_name].relation_joined.emit(
+            relation, remote_unit.app, remote_unit)
+        # TODO: jam 2020-03-05 Do we only emit relation_changed if remote_unit_data isn't
+        #       empty? juju itself always triggers relation_changed immediately after
+        #       relation_joined
+        self._charm.on[relation_name].relation_changed.emit(
+            relation, remote_unit.app, remote_unit)
 
     def read_relation_data(self, relation_id, app_or_unit):
         """Read the relation data bucket for a single app or unit in a given relation.
 
-        This ignores all of the safety checks of who can and can't see data in relations (eg, non leaders can't read
-        their own application's relation data because there are no events that keep that data up-to-date for the unit).
+        This ignores all of the safety checks of who can and can't see data in relations (eg,
+        non-leaders can't read their own application's relation data because there are no events
+        that keep that data up-to-date for the unit).
 
         :param relation_id: The relation whose content we want to look at.
         :type relation_id: int
@@ -209,60 +227,59 @@ class TestingHarness:
             else:
                 new_values[k] = v
         self._backend._relation_data[relation_id][app_or_unit] = new_values
-        if self._charm is not None:
-            model = self._charm.framework.model
-            relation_name = self._backend._relation_names[relation_id]
-            relation = model.get_relation(relation_name, relation_id)
-            if '/' in app_or_unit:
-                entity = model.get_unit(app_or_unit)
-            else:
-                entity = model.get_app(app_or_unit)
-            rel_data = relation.data.get(entity, None)
-            if rel_data is not None:
-                # If we have read and cached this data, make sure we invalidate it
-                rel_data._invalidate()
-            # TODO: we only need to trigger relation_changed if it is a remote app or unit
-            self._trigger_relation_changed(relation_id, app_or_unit)
+        relation_name = self._backend._relation_names[relation_id]
+        relation = self.model.get_relation(relation_name, relation_id)
+        if '/' in app_or_unit:
+            entity = self.model.get_unit(app_or_unit)
+        else:
+            entity = self.model.get_app(app_or_unit)
+        rel_data = relation.data.get(entity, None)
+        if rel_data is not None:
+            # If we have read and cached this data, make sure we invalidate it
+            rel_data._invalidate()
+        # TODO: we only need to trigger relation_changed if it is a remote app or unit
+        self._trigger_relation_changed(relation_id, app_or_unit)
 
     def _trigger_relation_changed(self, relation_id, app_or_unit):
-        """Trigger a relation_changed event for the given event, triggered by changes from the given unit or app."""
         if self._charm is None:
-            raise RuntimeError('cannot trigger a relation_changed event without a Charm registered')
+            return
         rel_name = self._backend._relation_names[relation_id]
-        model = self._charm.framework.model
-        relation = model.get_relation(rel_name, relation_id)
+        relation = self.model.get_relation(rel_name, relation_id)
         if '/' in app_or_unit:
             app_name = app_or_unit.split('/')[0]
             unit_name = app_or_unit
-            app = model.get_app(app_name)
-            unit = model.get_unit(unit_name)
+            app = self.model.get_app(app_name)
+            unit = self.model.get_unit(unit_name)
             args = (relation, app, unit)
         else:
             app_name = app_or_unit
-            app = model.get_app(app_name)
+            app = self.model.get_app(app_name)
             args = (relation, app)
         self._charm.on[rel_name].relation_changed.emit(*args)
 
-    def update_config(self, key_values={}, unset=()):
+    def update_config(self, key_values=None, unset=()):
         """Update the config as seen by the charm, and trigger a config_changed event.
 
         This will trigger a `config_changed` event.
 
-        :param key_values: A dict of key:value pairs to update in config.
-        :param unset: An iterable of keys to remove from Config. (Note that this does not currently reset the
-            config values to the default defined in config.yaml.
+        :param key_values: A Mapping of key:value pairs to update in config.
+        :param unset: An iterable of keys to remove from Config. (Note that this does
+          not currently reset the config values to the default defined in config.yaml.
         :return: None
         """
         config = self._backend._config
-        for key, value in key_values.items():
-            config[key] = value
+        if key_values is not None:
+            for key, value in key_values.items():
+                config[key] = value
         for key in unset:
             config.pop(key, None)
-        # NOTE: jam 2020-03-01 Note that this sort of works 'by accident'. The issue is that Config is a LazyMapping,
-        # but its _load returns a dict and this method mutates the dict that Config is caching.
-        # Arguably we should be doing some sort of charm.framework.model.config._invalidate()
-        if self._charm is not None:
-            self._charm.on.config_changed.emit()
+        # NOTE: jam 2020-03-01 Note that this sort of works "by accident". Config
+        # is a LazyMapping, but its _load returns a dict and this method mutates
+        # the dict that Config is caching. Arguably we should be doing some sort
+        # of charm.framework.model.config._invalidate()
+        if self._charm is None:
+            return
+        self._charm.on.config_changed.emit()
 
     def set_leader(self, is_leader=True):
         """Set whether this unit is the leader or not.
@@ -274,16 +291,16 @@ class TestingHarness:
         """
         was_leader = self._backend._is_leader
         self._backend._is_leader = is_leader
-        # Note: jam 2020-03-01 currently is_leader is cached at the ModelBackend level, not in the Model objects,
-        #  so this automatically gets noticed.
+        # Note: jam 2020-03-01 currently is_leader is cached at the ModelBackend level, not in
+        # the Model objects, so this automatically gets noticed.
         if is_leader and not was_leader and self._charm is not None:
             self._charm.on.leader_elected.emit()
 
     def get_backend_calls(self, reset=False):
         """Return the calls that we have made to the TestingModelBackend.
 
-        This is useful mostly for testing the framework itself, so that we can assert that we do/don't trigger extra
-        calls.
+        This is useful mostly for testing the framework itself, so that we can assert that we
+        do/don't trigger extra calls.
 
         :param reset: If True, reset the calls list back to empty.
         :type reset: bool
