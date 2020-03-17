@@ -53,8 +53,8 @@ class TestModel(unittest.TestCase):
         self.relation_id_db0 = self.harness.add_relation('db0', 'db')
         self.model = self.harness.model
 
-    def assertBackendCalls(self, expected):
-        self.assertEqual(expected, self.harness.get_backend_calls())
+    def assertBackendCalls(self, expected, *, reset=False):
+        self.assertEqual(expected, self.harness.get_backend_calls(reset=reset))
 
     def test_model(self):
         self.assertIs(self.model.app, self.model.unit.app)
@@ -187,10 +187,9 @@ class TestModel(unittest.TestCase):
 
     def test_relation_data_modify_remote(self):
         relation_id = self.harness.add_relation(
-            'db1', 'remoteapp1', remote_app_data={
-                'secret': 'cafedeadbeef'})
-        self.harness.add_relation_unit(relation_id, 'remoteapp1/0')
-        self.harness.add_relation_unit(relation_id, 'remoteapp1/1')
+            'db1', 'remoteapp1', remote_app_data={'secret': 'cafedeadbeef'})
+        self.harness.add_relation_unit(
+            relation_id, 'remoteapp1/0', remote_unit_data={'host': 'remoteapp1/0'})
 
         rel_db1 = self.model.get_relation('db1')
         remoteapp1_0 = next(filter(lambda u: u.name == 'remoteapp1/0',
@@ -485,71 +484,50 @@ class TestModel(unittest.TestCase):
     def test_local_set_valid_unit_status(self):
         test_cases = [(
             ops.model.ActiveStatus('Green'),
-            lambda: fake_script(self, 'status-set', 'exit 0'),
-            lambda: self.assertEqual(fake_script_calls(self, True),
-                                     [['status-set', '--application=False', 'active', 'Green']]),
+            [('status_set', 'active', 'Green', {'is_app': False})],
         ), (
             ops.model.MaintenanceStatus('Yellow'),
-            lambda: fake_script(self, 'status-set', 'exit 0'),
-            lambda: self.assertEqual(
-                fake_script_calls(self, True),
-                [['status-set', '--application=False', 'maintenance', 'Yellow']]),
+            [('status_set', 'maintenance', 'Yellow', {'is_app': False})],
         ), (
             ops.model.BlockedStatus('Red'),
-            lambda: fake_script(self, 'status-set', 'exit 0'),
-            lambda: self.assertEqual(fake_script_calls(self, True),
-                                     [['status-set', '--application=False', 'blocked', 'Red']]),
+            [('status_set', 'blocked', 'Red', {'is_app': False})],
         ), (
             ops.model.WaitingStatus('White'),
-            lambda: fake_script(self, 'status-set', 'exit 0'),
-            lambda: self.assertEqual(fake_script_calls(self, True),
-                                     [['status-set', '--application=False', 'waiting', 'White']]),
+            [('status_set', 'waiting', 'White', {'is_app': False})],
         )]
 
-        for target_status, setup_tools, check_tool_calls in test_cases:
-            setup_tools()
-
+        for target_status, backend_calls in test_cases:
             self.model.unit.status = target_status
-
             self.assertEqual(self.model.unit.status, target_status)
-
-            check_tool_calls()
+            self.assertBackendCalls(backend_calls, reset=True)
 
     def test_local_set_valid_app_status(self):
-        fake_script(self, 'is-leader', 'echo true')
+        self.harness.set_leader(True)
+        # is_leader is cached in the ModelBackend, but Model calls it before setting the status
+        # and when checking the status.
         test_cases = [(
             ops.model.ActiveStatus('Green'),
-            lambda: fake_script(self, 'status-set', 'exit 0'),
-            lambda: self.assertIn(['status-set', '--application=True', 'active', 'Green'],
-                                  fake_script_calls(self, True)),
+            [('is_leader',), ('status_set', 'active', 'Green', {'is_app': True}), ('is_leader',)],
         ), (
             ops.model.MaintenanceStatus('Yellow'),
-            lambda: fake_script(self, 'status-set', 'exit 0'),
-            lambda: self.assertIn(['status-set', '--application=True', 'maintenance', 'Yellow'],
-                                  fake_script_calls(self, True)),
+            [('is_leader',), ('status_set', 'maintenance', 'Yellow', {'is_app': True}),
+             ('is_leader',)],
         ), (
             ops.model.BlockedStatus('Red'),
-            lambda: fake_script(self, 'status-set', 'exit 0'),
-            lambda: self.assertIn(['status-set', '--application=True', 'blocked', 'Red'],
-                                  fake_script_calls(self, True)),
+            [('is_leader',), ('status_set', 'blocked', 'Red', {'is_app': True}), ('is_leader',)],
         ), (
             ops.model.WaitingStatus('White'),
-            lambda: fake_script(self, 'status-set', 'exit 0'),
-            lambda: self.assertIn(['status-set', '--application=True', 'waiting', 'White'],
-                                  fake_script_calls(self, True)),
+            [('is_leader',), ('status_set', 'waiting', 'White', {'is_app': True}), ('is_leader',)],
+            ops.model.ActiveStatus('Green'),
         )]
 
-        for target_status, setup_tools, check_tool_calls in test_cases:
-            setup_tools()
-
+        for target_status, backend_calls in test_cases:
             self.model.app.status = target_status
-
             self.assertEqual(self.model.app.status, target_status)
-
-            check_tool_calls()
+            self.assertBackendCalls(backend_calls, reset=True)
 
     def test_set_app_status_non_leader_raises(self):
-        fake_script(self, 'is-leader', 'echo false')
+        self.harness.set_leader(False)
 
         with self.assertRaises(RuntimeError):
             self.model.app.status
