@@ -27,22 +27,19 @@ class Harness:
     :type _charm: CharmBase
     """
 
-    def __init__(self, charm_meta_yaml):
+    def __init__(self, charm_cls, charm_meta_yaml):
         """Used for testing your Charm or component implementations.
 
         Example::
 
-        harness = Harness('''
+        harness = Harness(MyCharm, '''
                 name: my-charm
                 requires:
                   db:
                     interface: pgsql
                 ''')
-        charm = harness.initialize(MyCharm)
         # Do initial setup here
         relation_id = harness.add_relation('db', 'postgresql')
-        # Now enable the charm to see events as the model changes
-        harness.enable_events(charm)
         harness.add_relation_unit(relation_id, 'postgresql/0', remote_unit_data={'key': 'value'})
         # Check that charm has properly handled the relation_joined event for postgresql/0
         self.assertEqual(harness.charm. ...)
@@ -61,7 +58,12 @@ class Harness:
         self._relation_id_counter = 0
         self._model = model.Model(unit_name, meta, self._backend)
         self._framework = framework.Framework(":memory:", "no-disk-path", meta, self._model)
-        self._charm = None
+        self._charm = self._initialize(charm_cls)
+        self._events_enabled = True
+
+    @property
+    def charm(self):
+        return self._charm
 
     @property
     def model(self):
@@ -71,7 +73,7 @@ class Harness:
     def framework(self):
         return self._framework
 
-    def initialize(self, charm_cls):
+    def _initialize(self, charm_cls):
         """Instantiate the Charm class provided, using the Harness's framework and charm metadata.
              :param charm_cls: The Charm class that should be tested. If you are just testing a
               component, you can pass in ops.charm.CharmBase.
@@ -95,19 +97,15 @@ class Harness:
         # rather than TestCharm has no attribute foo.
         TestCharm.__name__ = charm_cls.__name__
         the_charm = TestCharm(self._framework, self._framework.meta.name)
-        self.enable_events(the_charm)
         return the_charm
 
-    def enable_events(self, the_charm):
+    def enable_events(self):
         """Start emitting events for charm.on when the model is changed.
 
         Once enable_events is passed the charm, any changes to the model (such as
         `update_relation_data`) will trigger the associated events (`relation_changed`).
-
-        :param the_charm: A CharmBase instance that we will use to trigger events.
-        :return: None
         """
-        self._charm = the_charm
+        self._events_enabled = True
 
     def disable_events(self):
         """Stop emitting events when the model changes.
@@ -115,7 +113,7 @@ class Harness:
         This can be used by developers to stop events from being emitted while they are doing
         setup tasks.
         """
-        self._charm = None
+        self._events_enabled = False
 
     def _next_relation_id(self):
         rel_id = self._relation_id_counter
@@ -148,7 +146,7 @@ class Harness:
         }
         # Reload the relation_ids list
         self.model.relations._invalidate(relation_name)
-        if self._charm is None:
+        if self._charm is None or not self._events_enabled:
             return rel_id
         # TODO: jam 2020-03-05 We should be triggering relation_changed(app) if
         #       remote_app_data isn't empty.
@@ -184,7 +182,7 @@ class Harness:
         remote_unit = self.model.get_unit(remote_unit_name)
         relation = self.model.get_relation(relation_name, relation_id)
         relation.data[remote_unit]._invalidate()
-        if self._charm is None:
+        if self._charm is None or not self._events_enabled:
             return
         self._charm.on[relation_name].relation_joined.emit(
             relation, remote_unit.app, remote_unit)
@@ -243,7 +241,7 @@ class Harness:
         self._emit_relation_changed(relation_id, app_or_unit)
 
     def _emit_relation_changed(self, relation_id, app_or_unit):
-        if self._charm is None:
+        if self._charm is None or not self._events_enabled:
             return
         rel_name = self._backend._relation_names[relation_id]
         relation = self.model.get_relation(rel_name, relation_id)
@@ -279,7 +277,7 @@ class Harness:
         # is a LazyMapping, but its _load returns a dict and this method mutates
         # the dict that Config is caching. Arguably we should be doing some sort
         # of charm.framework.model.config._invalidate()
-        if self._charm is None:
+        if self._charm is None or not self._events_enabled:
             return
         self._charm.on.config_changed.emit()
 
@@ -295,8 +293,9 @@ class Harness:
         self._backend._is_leader = is_leader
         # Note: jam 2020-03-01 currently is_leader is cached at the ModelBackend level, not in
         # the Model objects, so this automatically gets noticed.
-        if is_leader and not was_leader and self._charm is not None:
-            self._charm.on.leader_elected.emit()
+        if is_leader and not was_leader:
+            if self._charm is not None and self._events_enabled:
+                self._charm.on.leader_elected.emit()
 
 
 class _TestingModelBackend:
