@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
+import pathlib
 from textwrap import dedent
 
 from ops import charm, framework, model
@@ -22,46 +24,45 @@ class Harness:
     """This class represents a way to build up the model that will drive a test suite.
 
     The model that is created is from the viewpoint of the charm that you are testing.
-
-    :ivar _charm: The instance of Charm that is backed by this testing harness.
-    :type _charm: CharmBase
     """
 
-    def __init__(self, charm_meta_yaml, unit_number=0):
+    def __init__(self, charm_cls, meta=None):
         """Used for testing your Charm or component implementations.
 
         Example::
 
-        harness = Harness('''
-                name: my-charm
-                requires:
-                  db:
-                    interface: pgsql
-                ''')
-        charm = harness.initialize(MyCharm)
-        harness.enable_events(charm)
-        relation_id = harness.add_relation('db', 'postgresql')
-        harness.add_relation_unit(relation_id, 'postgresql/0', remote_unit_data={'key': 'value'})
-        # Check that charm has properly handled the relation_joined event for postgresql/0
-        self.assertEqual(harness.charm.
+            harness = Harness(MyCharm)
+            # Do initial setup here
+            relation_id = harness.add_relation('db', 'postgresql')
+            # Now instantiate the charm to see events as the model changes
+            harness.begin()
+            harness.add_relation_unit(relation_id, 'postgresql/0', remote_unit_data={'key': 'val'})
+            # Check that charm has properly handled the relation_joined event for postgresql/0
+            self.assertEqual(harness.charm. ...)
 
-        :param charm_meta_yaml: The YAML metadata for the charm, defining interfaces, name, etc.
-            This can be either a string or a file.
-        :param unit_number: Optional unit number for this unit (defaults to 0)
-        :type unit_number: int
+        :param charm_cls: The Charm class that you'll be testing.
+        :param meta: (optional) A string or file-like object containing the contents of
+            metadata.yaml. If not supplied, we will look for a 'metadata.yaml' file in the
+            parent directory of the Charm, and if not found fall back to a trivial
+            'name: test-charm' metadata.
         """
         # TODO: jam 2020-03-05 We probably want to take config as a parameter as well, since
         #       it would define the default values of config that the charm would see.
-        if isinstance(charm_meta_yaml, str):
-            charm_meta_yaml = dedent(charm_meta_yaml)
-        meta = charm.CharmMeta.from_yaml(charm_meta_yaml)
-        unit_name = '{}/{}'.format(meta.name, unit_number)
-        self.unit_name = unit_name
-        self._backend = _TestingModelBackend(unit_name, meta)
-        self._relation_id_counter = 0
-        self._model = model.Model(unit_name, meta, self._backend)
-        self._framework = framework.Framework(":memory:", "no-disk-path", meta, self._model)
+        self._charm_cls = charm_cls
         self._charm = None
+        self._meta = self._create_meta(meta)
+        self._unit_name = self._meta.name + '/0'
+        self._model = None
+        self._framework = None
+        self._hooks_enabled = True
+        self._relation_id_counter = 0
+        self._backend = _TestingModelBackend(self._unit_name, self._meta)
+        self._model = model.Model(self._unit_name, self._meta, self._backend)
+        self._framework = framework.Framework(":memory:", "no-disk-path", self._meta, self._model)
+
+    @property
+    def charm(self):
+        return self._charm
 
     @property
     def model(self):
@@ -71,41 +72,61 @@ class Harness:
     def framework(self):
         return self._framework
 
-    def initialize(self, charm_cls):
-        """Instantiate the Charm class provided, using the Harness's framework and charm metadata.
-             :param charm_cls: The Charm class that should be tested. If you are just testing a
-              component, you can pass in ops.charm.CharmBase.
-          :type charm_cls: CharmBase
-        """
+    def begin(self):
+        """Instantiate the Charm and start handling events.
 
+        Before calling begin(), changes to the model won't be
+        """
         # The Framework adds attributes to class objects for events, etc. As such, we can't re-use
         # the original class against multiple Frameworks. So create a locally defined class
         # and register it.
         # TODO: jam 2020-03-16 We are looking to changes this to Instance attributes instead of
         #       Class attributes which should clean up this ugliness. The API can stay the same
-        class TestEvents(charm_cls.on.__class__):
+        class TestEvents(self._charm_cls.on.__class__):
             pass
 
-        TestEvents.__name__ = charm_cls.on.__class__.__name__
+        TestEvents.__name__ = self._charm_cls.on.__class__.__name__
 
-        class TestCharm(charm_cls):
+        class TestCharm(self._charm_cls):
             on = TestEvents()
 
         # Note: jam 2020-03-01 This is so that errors in testing say MyCharm has no attribute foo,
         # rather than TestCharm has no attribute foo.
-        TestCharm.__name__ = charm_cls.__name__
-        return TestCharm(self._framework, self._framework.meta.name)
+        TestCharm.__name__ = self._charm_cls.__name__
+        self._charm = TestCharm(self._framework, self._framework.meta.name)
 
-    def enable_events(self, the_charm):
-        """Start triggering events for charm.on when the model is changed.
+    def _create_meta(self, charm_metadata):
+        """Create a CharmMeta object.
 
-        Once enable_events is passed the charm, any changes to the model (such as
-        `update_relation_data`) will trigger the associated events (`relation_changed`).
-
-        :param the_charm: A CharmBase instance that we will use to trigger events.
-        :return: None
+        Handle the cases where a user doesn't supply an explicit metadata snippet.
         """
-        self._charm = the_charm
+        if charm_metadata is None:
+            filename = inspect.getfile(self._charm_cls)
+            metadata_path = pathlib.Path(filename).parents[1] / 'metadata.yaml'
+            if metadata_path.is_file():
+                charm_metadata = metadata_path.read_text()
+            else:
+                # The simplest of metadata that the framework can support
+                charm_metadata = 'name: test-charm'
+        elif isinstance(charm_metadata, str):
+            charm_metadata = dedent(charm_metadata)
+        return charm.CharmMeta.from_yaml(charm_metadata)
+
+    def enable_hooks(self):
+        """Start emitting hook events from charm.on when the model is changed.
+
+        Once enable_hooks is passed the charm, any changes to the model (such as
+        `update_relation_data`) will trigger the associated events (`relation_changed`).
+        """
+        self._hooks_enabled = True
+
+    def disable_hooks(self):
+        """Stop emitting hook events when the model changes.
+
+        This can be used by developers to stop changes to the model from emitting events that
+        the charm will react to.
+        """
+        self._hooks_enabled = False
 
     def _next_relation_id(self):
         rel_id = self._relation_id_counter
@@ -144,8 +165,9 @@ class Harness:
             self._backend.app_name: initial_app_data,
         }
         # Reload the relation_ids list
-        self.model.relations._invalidate(relation_name)
-        if self._charm is None:
+        if self._model is not None:
+            self._model.relations._invalidate(relation_name)
+        if self._charm is None or not self._hooks_enabled:
             return rel_id
         # TODO: jam 2020-03-05 We should be triggering relation_changed(app) if
         #       remote_app_data isn't empty.
@@ -178,12 +200,13 @@ class Harness:
         relation_name = self._backend._relation_names[relation_id]
         # Make sure that the Model reloads the relation_list for this relation_id, as well as
         # reloading the relation data for this unit.
-        self.model.relations._invalidate(relation_name)
-        if self._charm is None:
+        if self._model is not None:
+            self._model.relations._invalidate(relation_name)
+            remote_unit = self._model.get_unit(remote_unit_name)
+            relation = self._model.get_relation(relation_name, relation_id)
+            relation.data[remote_unit]._invalidate()
+        if self._charm is None or not self._hooks_enabled:
             return
-        remote_unit = self.model.get_unit(remote_unit_name)
-        relation = self.model.get_relation(relation_name, relation_id)
-        relation.data[remote_unit]._invalidate()
         self._charm.on[relation_name].relation_joined.emit(
             relation, remote_unit.app, remote_unit)
         # TODO: jam 2020-03-05 Do we only emit relation_changed if remote_unit_data isn't
@@ -192,8 +215,8 @@ class Harness:
         self._charm.on[relation_name].relation_changed.emit(
             relation, remote_unit.app, remote_unit)
 
-    def read_relation_data(self, relation_id, app_or_unit):
-        """Read the relation data bucket for a single app or unit in a given relation.
+    def get_relation_data(self, relation_id, app_or_unit):
+        """Get the relation data bucket for a single app or unit in a given relation.
 
         This ignores all of the safety checks of who can and can't see data in relations (eg,
         non-leaders can't read their own application's relation data because there are no events
@@ -228,20 +251,21 @@ class Harness:
                 new_values[k] = v
         self._backend._relation_data[relation_id][app_or_unit] = new_values
         relation_name = self._backend._relation_names[relation_id]
-        relation = self.model.get_relation(relation_name, relation_id)
-        if '/' in app_or_unit:
-            entity = self.model.get_unit(app_or_unit)
-        else:
-            entity = self.model.get_app(app_or_unit)
-        rel_data = relation.data.get(entity, None)
-        if rel_data is not None:
-            # If we have read and cached this data, make sure we invalidate it
-            rel_data._invalidate()
+        if self._model is not None:
+            relation = self._model.get_relation(relation_name, relation_id)
+            if '/' in app_or_unit:
+                entity = self._model.get_unit(app_or_unit)
+            else:
+                entity = self._model.get_app(app_or_unit)
+            rel_data = relation.data.get(entity, None)
+            if rel_data is not None:
+                # If we have read and cached this data, make sure we invalidate it
+                rel_data._invalidate()
         # TODO: we only need to trigger relation_changed if it is a remote app or unit
-        self._trigger_relation_changed(relation_id, app_or_unit)
+        self._emit_relation_changed(relation_id, app_or_unit)
 
-    def _trigger_relation_changed(self, relation_id, app_or_unit):
-        if self._charm is None:
+    def _emit_relation_changed(self, relation_id, app_or_unit):
+        if self._charm is None or not self._hooks_enabled:
             return
         rel_name = self._backend._relation_names[relation_id]
         relation = self.model.get_relation(rel_name, relation_id)
@@ -277,7 +301,7 @@ class Harness:
         # is a LazyMapping, but its _load returns a dict and this method mutates
         # the dict that Config is caching. Arguably we should be doing some sort
         # of charm.framework.model.config._invalidate()
-        if self._charm is None:
+        if self._charm is None or not self._hooks_enabled:
             return
         self._charm.on.config_changed.emit()
 
@@ -315,7 +339,7 @@ class Harness:
 class _TestingModelBackend:
     """This conforms to the interface for ModelBackend but provides canned data.
 
-    You should not use this class directly, it is used by `TestingHarness`_ to drive the model.
+    You should not use this class directly, it is used by `Harness`_ to drive the model.
     """
 
     def __init__(self, unit_name, meta):
@@ -323,7 +347,6 @@ class _TestingModelBackend:
         self.app_name = self.unit_name.split('/')[0]
         self._calls = []
         self._meta = meta
-
         self._is_leader = None
         self._relation_ids_map = {}  # relation name to [relation_ids,...]
         self._relation_names = {}  # reverse map from relation_id to relation_name
@@ -393,7 +416,6 @@ class _TestingModelBackend:
 
     def status_get(self, *, is_app=False):
         self._calls.append(('status_get', {'is_app': is_app}))
-        raise NotImplementedError(self.status_get)
         if is_app:
             return self._app_status
         else:
