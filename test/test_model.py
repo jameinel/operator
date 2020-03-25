@@ -677,7 +677,7 @@ class TestModel(unittest.TestCase):
                 self.model.storages.request('data', count_v)
 
 
-class TestModelBindings(unittest.TestCase):
+class DONTTestModelBindings(unittest.TestCase):
 
     def setUp(self):
         def restore_env(env):
