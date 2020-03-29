@@ -200,6 +200,8 @@ def main(charm_class):
                 or juju_event_name.endswith('_storage_attached')):
             _setup_event_links(charm_dir, charm)
 
+        _emit_charm_event(charm, juju_event_name)
+
         # TODO: Remove the collect_metrics check below as soon as the relevant
         #       Juju changes are made.
         #
@@ -207,8 +209,6 @@ def main(charm_class):
         # they do not have the full access to all hook tools.
         if juju_event_name != 'collect_metrics':
             framework.reemit()
-
-        _emit_charm_event(charm, juju_event_name)
 
         framework.commit()
     finally:

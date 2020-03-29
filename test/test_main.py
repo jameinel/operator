@@ -211,12 +211,12 @@ start:
 
         state = self._simulate_event(EventSpec(ConfigChangedEvent, 'config-changed',
                                                charm_config=charm_config))
-        self.assertEqual(state['observed_event_types'], [ConfigChangedEvent])
+        self.assertEqual(state['observed_event_types'], [ConfigChangedEvent, ConfigChangedEvent])
 
         # Re-emit should pick the deferred config-changed.
         state = self._simulate_event(EventSpec(UpdateStatusEvent, 'update-status',
                                                charm_config=charm_config))
-        self.assertEqual(state['observed_event_types'], [ConfigChangedEvent, UpdateStatusEvent])
+        self.assertEqual(state['observed_event_types'], [UpdateStatusEvent, ConfigChangedEvent])
 
     def test_no_reemission_on_collect_metrics(self):
         # base64 encoding is used to avoid null bytes.
@@ -231,7 +231,7 @@ start:
 
         state = self._simulate_event(EventSpec(ConfigChangedEvent, 'config-changed',
                                                charm_config=charm_config))
-        self.assertEqual(state['observed_event_types'], [ConfigChangedEvent])
+        self.assertEqual(state['observed_event_types'], [ConfigChangedEvent, ConfigChangedEvent])
 
         # Re-emit should not pick the deferred config-changed because
         # collect-metrics runs in a restricted context.
