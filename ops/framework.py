@@ -462,7 +462,7 @@ class SQLiteStorage:
             c = self._db.execute('''
                 SELECT event_path, observer_path, method_name
                   FROM notice
-                 ORDER BY sequence
+                 ORDER BY sequence DESC
                 ''')
         while True:
             rows = c.fetchmany()

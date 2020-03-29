@@ -269,6 +269,11 @@ class TestFramework(unittest.TestCase):
                 self.seen = []
                 self.done = {}
 
+            def get_observed(self):
+                observed = " ".join(self.seen)
+                self.seen = []
+                return observed
+
             def on_any(self, event):
                 self.seen.append(event.handle.kind)
                 if not self.done.get(event.handle.kind):
@@ -299,21 +304,38 @@ class TestFramework(unittest.TestCase):
         # make sure the objects are gone before we reemit them
         gc.collect()
 
+        self.assertEqual("a b", obs1.get_observed())
+        self.assertEqual("a b c", obs2.get_observed())
+        # All events were deferred, and will be deferred again
         framework.reemit()
+        self.assertEqual("b a", obs1.get_observed())
+        self.assertEqual("c b a", obs2.get_observed())
         obs1.done["a"] = True
         obs2.done["b"] = True
         framework.reemit()
+        # Only observers that defer see the event again
+        self.assertEqual("b a", obs1.get_observed())
+        self.assertEqual("c b a", obs2.get_observed())
         framework.reemit()
+        self.assertEqual("b", obs1.get_observed())
+        self.assertEqual("c a", obs2.get_observed())
         obs1.done["b"] = True
         obs2.done["a"] = True
+        # neither observer will defer a b, only 'c' emitted again
         framework.reemit()
+        self.assertEqual("b", obs1.get_observed())
+        self.assertEqual("c a", obs2.get_observed())
         obs2.done["c"] = True
         framework.reemit()
+        self.assertEqual("", obs1.get_observed())
+        self.assertEqual("c", obs2.get_observed())
+        # All events handled
         framework.reemit()
+        self.assertEqual("", obs1.get_observed())
+        self.assertEqual("", obs2.get_observed())
         framework.reemit()
-
-        self.assertEqual(" ".join(obs1.seen), "a b a b a b b b")
-        self.assertEqual(" ".join(obs2.seen), "a b c a b c a b c a c a c c")
+        self.assertEqual("", obs1.get_observed())
+        self.assertEqual("", obs2.get_observed())
 
         # Now the event objects must all be gone from storage.
         self.assertRaises(NoSnapshotError, framework.load_snapshot, ev_a_handle)
