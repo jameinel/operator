@@ -225,8 +225,8 @@ class TestModel(unittest.TestCase):
         ])
 
     def test_app_relation_data_modify_local_as_leader(self):
-        relation_id = self.harness.add_relation('db1', 'remoteapp1',
-                                                initial_app_data={'password': 'deadbeefcafe'})
+        relation_id = self.harness.add_relation('db1', 'remoteapp1')
+        self.harness.update_relation_data(relation_id, 'myapp', {'password': 'deadbeefcafe'})
         self.harness.add_relation_unit(relation_id, 'remoteapp1/0')
         self.harness.set_leader(True)
 
@@ -240,6 +240,8 @@ class TestModel(unittest.TestCase):
         self.assertEqual(rel_db1.data[local_app]['password'], 'foo')
 
         self.assertBackendCalls([
+            ('relation_ids', 'db1'),
+            ('relation_list', relation_id),
             ('relation_ids', 'db1'),
             ('relation_list', relation_id),
             ('relation_get', relation_id, 'myapp', True),
@@ -677,7 +679,7 @@ class TestModel(unittest.TestCase):
                 self.model.storages.request('data', count_v)
 
 
-class DONTTestModelBindings(unittest.TestCase):
+class TestModelBindings(unittest.TestCase):
 
     def setUp(self):
         def restore_env(env):
@@ -687,12 +689,18 @@ class DONTTestModelBindings(unittest.TestCase):
 
         os.environ['JUJU_UNIT_NAME'] = 'myapp/0'
 
-        meta = ops.charm.CharmMeta()
-        meta.relations = {
-            'db0': RelationMeta('provides', 'db0', {'interface': 'db0', 'scope': 'global'}),
-            'db1': RelationMeta('requires', 'db1', {'interface': 'db1', 'scope': 'global'}),
-            'db2': RelationMeta('peers', 'db2', {'interface': 'db2', 'scope': 'global'}),
-        }
+        meta = ops.charm.CharmMeta.from_yaml('''
+            name: myapp
+            provides:
+                db0:
+                    interface: db0
+            requires:
+                db1:
+                    interface: db1
+            peers:
+                db2:
+                    interface: db2
+            ''')
         self.backend = ops.model.ModelBackend()
         self.model = ops.model.Model('myapp/0', meta, self.backend)
 

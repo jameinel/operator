@@ -24,6 +24,9 @@ class Harness:
     """This class represents a way to build up the model that will drive a test suite.
 
     The model that is created is from the viewpoint of the charm that you are testing.
+
+    :ivar charm: The instance of Charm that is backed by this testing harness.
+    :type charm: CharmBase
     """
 
     def __init__(self, charm_cls, meta=None):
@@ -137,16 +140,13 @@ class Harness:
         self._relation_id_counter += 1
         return rel_id
 
-    def add_relation(self, relation_name, remote_app, *, initial_unit_data=None,
-                     initial_app_data=None, remote_app_data=None):
+    def add_relation(self, relation_name, remote_app, *, remote_app_data=None):
         """Declare that there is a new relation between this app and `remote_app`.
 
         TODO: Once relation_created exists as a Juju hook, it should be triggered by this code.
 
         :param relation_name: The relation on Charm that is being related to
         :param remote_app: The name of the application that is being related to
-        :param initial_unit_data: Optional data bag that the local unit is sending
-        :param initial_app_data: Optional data bag that the local application is sending
         :param remote_app_data: Optional data bag that the remote application is sending
           If remote_app_data is not empty, this should trigger
           ``charm.on[relation_name].relation_changed(app)``
@@ -157,16 +157,12 @@ class Harness:
         self._backend._relation_ids_map.setdefault(relation_name, []).append(rel_id)
         self._backend._relation_names[rel_id] = relation_name
         self._backend._relation_list_map[rel_id] = []
-        if initial_unit_data is None:
-            initial_unit_data = {}
-        if initial_app_data is None:
-            initial_app_data = {}
         if remote_app_data is None:
             remote_app_data = {}
         self._backend._relation_data[rel_id] = {
             remote_app: remote_app_data,
-            self._backend.unit_name: initial_unit_data,
-            self._backend.app_name: initial_app_data,
+            self._backend.unit_name: {},
+            self._backend.app_name: {},
         }
         # Reload the relation_ids list
         if self._model is not None:
@@ -195,7 +191,6 @@ class Harness:
             relation data before relation_changed is triggered.
         :type remote_unit_data: dict
         :return: None
-        :rtype: None
         """
         self._backend._relation_list_map[relation_id].append(remote_unit_name)
         if remote_unit_data is None:
@@ -232,7 +227,7 @@ class Harness:
         :type app_or_unit: str
         :return: a dict containing the relation data for `app_or_unit` or None.
         :rtype: dict
-        :raises: KeyError
+        :raises: KeyError if relation_id doesn't exist
         """
         return self._backend._relation_data[relation_id].get(app_or_unit, None)
 
