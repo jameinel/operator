@@ -50,6 +50,7 @@ class Harness:
         #       it would define the default values of config that the charm would see.
         self._charm_cls = charm_cls
         self._charm = None
+        self._charm_dir = 'no-disk-path'  # this may be updated by _create_meta
         self._meta = self._create_meta(meta)
         self._unit_name = self._meta.name + '/0'
         self._model = None
@@ -58,7 +59,7 @@ class Harness:
         self._relation_id_counter = 0
         self._backend = _TestingModelBackend(self._unit_name, self._meta)
         self._model = model.Model(self._unit_name, self._meta, self._backend)
-        self._framework = framework.Framework(":memory:", "no-disk-path", self._meta, self._model)
+        self._framework = framework.Framework(":memory:", self._charm_dir, self._meta, self._model)
 
     @property
     def charm(self):
@@ -75,7 +76,8 @@ class Harness:
     def begin(self):
         """Instantiate the Charm and start handling events.
 
-        Before calling begin(), changes to the model won't be
+        Before calling begin(), there is no Charm instance, so changes to the Model won't emit
+        events. You must call begin before self.charm is valid.
         """
         # The Framework adds attributes to class objects for events, etc. As such, we can't re-use
         # the original class against multiple Frameworks. So create a locally defined class
@@ -102,9 +104,11 @@ class Harness:
         """
         if charm_metadata is None:
             filename = inspect.getfile(self._charm_cls)
-            metadata_path = pathlib.Path(filename).parents[1] / 'metadata.yaml'
+            charm_dir = pathlib.Path(filename).parents[1]
+            metadata_path = charm_dir / 'metadata.yaml'
             if metadata_path.is_file():
                 charm_metadata = metadata_path.read_text()
+                self._charm_dir = charm_dir
             else:
                 # The simplest of metadata that the framework can support
                 charm_metadata = 'name: test-charm'
@@ -112,21 +116,21 @@ class Harness:
             charm_metadata = dedent(charm_metadata)
         return charm.CharmMeta.from_yaml(charm_metadata)
 
-    def enable_hooks(self):
-        """Start emitting hook events from charm.on when the model is changed.
-
-        Once enable_hooks is passed the charm, any changes to the model (such as
-        `update_relation_data`) will trigger the associated events (`relation_changed`).
-        """
-        self._hooks_enabled = True
-
     def disable_hooks(self):
         """Stop emitting hook events when the model changes.
 
         This can be used by developers to stop changes to the model from emitting events that
-        the charm will react to.
+        the charm will react to. Call `enable_hooks`_ to re-enable them.
         """
         self._hooks_enabled = False
+
+    def enable_hooks(self):
+        """Re-enable hook events from charm.on when the model is changed.
+
+        By default hook events are enabled once you call begin(), but if you have used
+        disable_hooks, this can be used to enable them again.
+        """
+        self._hooks_enabled = True
 
     def _next_relation_id(self):
         rel_id = self._relation_id_counter
@@ -282,13 +286,13 @@ class Harness:
         self._charm.on[rel_name].relation_changed.emit(*args)
 
     def update_config(self, key_values=None, unset=()):
-        """Update the config as seen by the charm, and trigger a config_changed event.
+        """Update the config as seen by the charm.
 
         This will trigger a `config_changed` event.
 
         :param key_values: A Mapping of key:value pairs to update in config.
         :param unset: An iterable of keys to remove from Config. (Note that this does
-          not currently reset the config values to the default defined in config.yaml.
+          not currently reset the config values to the default defined in config.yaml.)
         :return: None
         """
         config = self._backend._config
@@ -317,7 +321,7 @@ class Harness:
         self._backend._is_leader = is_leader
         # Note: jam 2020-03-01 currently is_leader is cached at the ModelBackend level, not in
         # the Model objects, so this automatically gets noticed.
-        if is_leader and not was_leader and self._charm is not None:
+        if is_leader and not was_leader and self._charm is not None and self._hooks_enabled:
             self._charm.on.leader_elected.emit()
 
     def get_backend_calls(self, reset=False):

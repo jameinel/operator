@@ -167,8 +167,18 @@ class TestHarness(unittest.TestCase):
         harness.begin()
         self.assertFalse(harness.charm.model.unit.is_leader())
         harness.set_leader(True)
-        self.assertEqual([{'name': 'leader-elected'}], harness.charm.changes)
+        self.assertEqual([{'name': 'leader-elected'}], harness.charm.get_changes(reset=True))
         self.assertTrue(harness.charm.model.unit.is_leader())
+        harness.set_leader(False)
+        self.assertFalse(harness.charm.model.unit.is_leader())
+        # No hook event when you lose leadership.
+        # TODO: verify if Juju always triggers `leader-settings-changed` if you
+        #   lose leadership.
+        self.assertEqual([], harness.charm.get_changes(reset=True))
+        harness.disable_hooks()
+        harness.set_leader(True)
+        # No hook event if you have disabled them
+        self.assertEqual([], harness.charm.get_changes(reset=True))
 
     def test_relation_set_app_not_leader(self):
         # language=YAML
@@ -216,8 +226,9 @@ class TestHarness(unittest.TestCase):
 
     def test_metadata_from_directory(self):
         tmp = pathlib.Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tmp)
-        with open(tmp / 'metadata.yaml', 'wt') as metadata:
+        self.addCleanup(shutil.rmtree, str(tmp))
+        metadata_filename = tmp / 'metadata.yaml'
+        with metadata_filename.open('wt') as metadata:
             metadata.write(textwrap.dedent('''
             name: my-charm
             requires:
@@ -226,7 +237,8 @@ class TestHarness(unittest.TestCase):
             '''))
         srcdir = tmp / 'src'
         srcdir.mkdir(0o755)
-        with open(srcdir / 'charm.py', 'wt') as charmpy:
+        charm_filename = srcdir / 'charm.py'
+        with charm_filename.open('wt') as charmpy:
             # language=Python
             charmpy.write(textwrap.dedent('''
                 from ops.charm import CharmBase
@@ -244,6 +256,8 @@ class TestHarness(unittest.TestCase):
         harness = Harness(charm_mod.MyTestingCharm)
         harness.begin()
         self.assertEqual(['db'], list(harness.model.relations))
+        # The charm_dir also gets set
+        self.assertEqual(harness.framework.charm_dir, tmp)
 
     def test_relation_set_deletes(self):
         # language=YAML
