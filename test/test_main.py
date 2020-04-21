@@ -46,6 +46,13 @@ from ops.charm import (
     ActionEvent,
     CollectMetricsEvent,
 )
+from ops.framework import (
+    Framework,
+    Handle,
+)
+from ops.main import (
+    CHARM_STATE_FILE,
+)
 
 from .test_helpers import fake_script, fake_script_calls
 
@@ -78,10 +85,6 @@ class TestMain(unittest.TestCase):
     def setUp(self):
         self._setup_charm_dir()
 
-        _, tmp_file = tempfile.mkstemp()
-        self._state_file = Path(tmp_file)
-        self.addCleanup(self._state_file.unlink)
-
         # Relations events are defined dynamically and modify the class attributes.
         # We use a subclass temporarily to prevent these side effects from leaking.
         class TestCharmEvents(CharmEvents):
@@ -102,6 +105,12 @@ class TestMain(unittest.TestCase):
         self.charm_exec_path = os.path.relpath(charm_path,
                                                str(self.hooks_dir))
         shutil.copytree(str(TEST_CHARM_DIR), str(self.JUJU_CHARM_DIR))
+
+        self._charm_state_file = self.JUJU_CHARM_DIR / CHARM_STATE_FILE
+
+        charm_spec = importlib.util.spec_from_file_location("charm", charm_path)
+        self.charm_module = importlib.util.module_from_spec(charm_spec)
+        charm_spec.loader.exec_module(self.charm_module)
 
         self._prepare_initial_hooks()
 
@@ -140,20 +149,19 @@ start:
             action_path = actions_dir / action_name
             action_path.symlink_to(self.charm_exec_path)
 
-    def _read_and_clear_state(self):
-        state = None
-        if self._state_file.stat().st_size:
-            with open(str(self._state_file), 'r+b') as state_file:
-                state = pickle.load(state_file)
-                state_file.truncate()
-        return state
+    def _read_stored_state(self):
+        f = Framework(self._charm_state_file, self.JUJU_CHARM_DIR, None, None)
+        c = self.charm_module.Charm(f, None)
+        stored = c._stored
+        f.close()
+        return stored
 
     def _simulate_event(self, event_spec):
         env = {
             'PATH': "{}:{}".format(Path(__file__).parent / 'bin', os.environ['PATH']),
             'JUJU_CHARM_DIR': str(self.JUJU_CHARM_DIR),
             'JUJU_UNIT_NAME': 'test_main/0',
-            'CHARM_CONFIG': event_spec.charm_config,
+            # 'CHARM_CONFIG': '',  # event_spec.charm_config,
         }
         if issubclass(event_spec.event_type, RelationEvent):
             rel_name = event_spec.event_name.split('_')[0]
@@ -192,29 +200,24 @@ start:
         # Note that sys.executable is used to make sure we are using the same
         # interpreter for the child process to support virtual environments.
         cmd = [sys.executable, str(event_file)]
+        print(cmd)
+        print(env)
         subprocess.run(
             cmd, check=True, env=env, cwd=str(self.JUJU_CHARM_DIR),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return self._read_and_clear_state()
+        )  # stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return self._read_stored_state()
 
     def test_event_reemitted(self):
-        # base64 encoding is used to avoid null bytes.
-        charm_config = base64.b64encode(pickle.dumps({
-            'STATE_FILE': self._state_file,
-        }))
-
         # First run "install" to make sure all hooks are set up.
-        state = self._simulate_event(EventSpec(InstallEvent, 'install', charm_config=charm_config))
-        self.assertEqual(state['observed_event_types'], [InstallEvent])
+        state = self._simulate_event(EventSpec(InstallEvent, 'install'))
+        self.assertEqual(state.observed_event_types, [InstallEvent])
 
-        state = self._simulate_event(EventSpec(ConfigChangedEvent, 'config-changed',
-                                               charm_config=charm_config))
-        self.assertEqual(state['observed_event_types'], [ConfigChangedEvent])
+        state = self._simulate_event(EventSpec(ConfigChangedEvent, 'config-changed'))
+        self.assertEqual(state.observed_event_types, [ConfigChangedEvent])
 
         # Re-emit should pick the deferred config-changed.
-        state = self._simulate_event(EventSpec(UpdateStatusEvent, 'update-status',
-                                               charm_config=charm_config))
-        self.assertEqual(state['observed_event_types'], [ConfigChangedEvent, UpdateStatusEvent])
+        state = self._simulate_event(EventSpec(UpdateStatusEvent, 'update-status'))
+        self.assertEqual(state.observed_event_types, [ConfigChangedEvent, UpdateStatusEvent])
 
     def test_no_reemission_on_collect_metrics(self):
         # base64 encoding is used to avoid null bytes.
@@ -224,18 +227,18 @@ start:
         fake_script(self, 'add-metric', 'exit 0')
 
         # First run "install" to make sure all hooks are set up.
-        state = self._simulate_event(EventSpec(InstallEvent, 'install', charm_config=charm_config))
-        self.assertEqual(state['observed_event_types'], [InstallEvent])
+        state = self._simulate_event(EventSpec(InstallEvent, 'install'))
+        self.assertEqual(state.observed_event_types, [InstallEvent])
 
         state = self._simulate_event(EventSpec(ConfigChangedEvent, 'config-changed',
                                                charm_config=charm_config))
-        self.assertEqual(state['observed_event_types'], [ConfigChangedEvent])
+        self.assertEqual(state.observed_event_types, [ConfigChangedEvent])
 
         # Re-emit should not pick the deferred config-changed because
         # collect-metrics runs in a restricted context.
         state = self._simulate_event(EventSpec(CollectMetricsEvent, 'collect-metrics',
                                                charm_config=charm_config))
-        self.assertEqual(state['observed_event_types'], [CollectMetricsEvent])
+        self.assertEqual(state.observed_event_types, [CollectMetricsEvent])
 
     def test_multiple_events_handled(self):
         self._prepare_actions()
@@ -368,7 +371,7 @@ start:
             handled_event_type = handled_events[0]
             self.assertEqual(handled_event_type, event_spec.event_type)
 
-            self.assertEqual(state['observed_event_types'], [event_spec.event_type])
+            self.assertEqual(state.observed_event_types, [event_spec.event_type])
 
             if event_spec.event_name in expected_event_data:
                 self.assertEqual(state[event_spec.event_name + '_data'],
