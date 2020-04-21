@@ -103,10 +103,6 @@ class TestMain(unittest.TestCase):
                                                str(self.hooks_dir))
         shutil.copytree(str(TEST_CHARM_DIR), str(self.JUJU_CHARM_DIR))
 
-        charm_spec = importlib.util.spec_from_file_location("charm", charm_path)
-        self.charm_module = importlib.util.module_from_spec(charm_spec)
-        charm_spec.loader.exec_module(self.charm_module)
-
         self._prepare_initial_hooks()
 
     def _prepare_initial_hooks(self):
@@ -401,8 +397,12 @@ start:
     def test_setup_event_links(self):
         """Test auto-creation of symlinks caused by initial events.
         """
+        charm_path = str(self.JUJU_CHARM_DIR / 'src/charm.py')
+        charm_spec = importlib.util.spec_from_file_location("charm", charm_path)
+        charm_module = importlib.util.module_from_spec(charm_spec)
+        charm_spec.loader.exec_module(charm_module)
         all_event_hooks = ['hooks/' + e.replace("_", "-")
-                           for e in self.charm_module.Charm.on.events().keys()]
+                           for e in charm_module.Charm.on.events().keys()]
         charm_config = base64.b64encode(pickle.dumps({
             'STATE_FILE': self._state_file,
         }))

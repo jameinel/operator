@@ -20,6 +20,7 @@ import sys
 sys.path.append('lib')  # noqa
 
 from ops.charm import CharmBase
+from ops.framework import StoredState
 from ops.main import main
 
 import logging
@@ -28,6 +29,8 @@ logger = logging.getLogger()
 
 
 class Charm(CharmBase):
+
+    _stored = StoredState()
 
     def __init__(self, *args):
         super().__init__(*args)
