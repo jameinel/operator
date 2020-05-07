@@ -89,7 +89,7 @@ def _create_event_link(charm, bound_event):
         event_path.symlink_to(target_path)
 
 
-def _setup_event_links(charm_dir, charm):
+def _setup_event_links(charm_dir: Path, charm_meta: ops.charm.CharmMeta):
     """Set up links for supported events that originate from Juju.
 
     Whether a charm can handle an event or not can be determined by
@@ -100,13 +100,16 @@ def _setup_event_links(charm_dir, charm):
     author at hooks/install or hooks/start.
 
     charm_dir -- A root directory of the charm.
-    charm -- An instance of the Charm class.
+    charm_meta -- The meta information about a charm (what relations exist to define what hooks
+        need to be created.)
 
     """
-    for bound_event in charm.on.events().values():
+    for bound_event in ops.charm.CharmBase.on.events():
         # Only events that originate from Juju need symlinks.
-        if issubclass(bound_event.event_type, (ops.charm.HookEvent, ops.charm.ActionEvent)):
+        if issubclass(bound_event.event_type, ops.charm.HookEvent):
             _create_event_link(charm, bound_event)
+    for relation in charm_meta.relations:
+        for event_name in ops.charm.RelationEvent.events:
 
 
 def _emit_charm_event(charm, event_name):
@@ -200,6 +203,18 @@ def main(charm_class):
     unit_name = os.environ['JUJU_UNIT_NAME']
     model = ops.model.Model(unit_name, meta, model_backend)
 
+    if not has_dispatch:
+        # When a charm is force-upgraded and a unit is in an error state Juju
+        # does not run upgrade-charm and instead runs the failed hook followed
+        # by config-changed. Given the nature of force-upgrading the hook setup
+        # code is not triggered on config-changed.
+        #
+        # 'start' event is included as Juju does not fire the install event for
+        # K8s charms (see LP: #1854635).
+        if (juju_event_name in ('install', 'start', 'upgrade_charm')
+                or juju_event_name.endswith('_storage_attached')):
+            _setup_event_links(charm_dir, meta)
+
     # TODO: If Juju unit agent crashes after exit(0) from the charm code
     # the framework will commit the snapshot but Juju will not commit its
     # operation.
@@ -207,18 +222,6 @@ def main(charm_class):
     framework = ops.framework.Framework(charm_state_path, charm_dir, meta, model)
     try:
         charm = charm_class(framework, None)
-
-        if not has_dispatch:
-            # When a charm is force-upgraded and a unit is in an error state Juju
-            # does not run upgrade-charm and instead runs the failed hook followed
-            # by config-changed. Given the nature of force-upgrading the hook setup
-            # code is not triggered on config-changed.
-            #
-            # 'start' event is included as Juju does not fire the install event for
-            # K8s charms (see LP: #1854635).
-            if (juju_event_name in ('install', 'start', 'upgrade_charm')
-                    or juju_event_name.endswith('_storage_attached')):
-                _setup_event_links(charm_dir, charm)
 
         # TODO: Remove the collect_metrics check below as soon as the relevant
         #       Juju changes are made.

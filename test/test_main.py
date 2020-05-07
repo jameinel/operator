@@ -185,7 +185,7 @@ start:
             'CHARM_CONFIG': event_spec.charm_config,
         }
         if issubclass(event_spec.event_type, RelationEvent):
-            rel_name = event_spec.event_name.split('_')[0]
+            rel_name = event_spec.name.split('_')[0]
             env.update({
                 'JUJU_RELATION': rel_name,
                 'JUJU_RELATION_ID': str(event_spec.relation_id),
@@ -206,7 +206,7 @@ start:
                 'JUJU_REMOTE_APP': '',
             })
         if issubclass(event_spec.event_type, ActionEvent):
-            event_filename = event_spec.event_name[:-len('_action')].replace('_', '-')
+            event_filename = event_spec.name[:-len('_action')].replace('_', '-')
             env.update({
                 event_spec.env_var: event_filename,
             })
@@ -215,7 +215,7 @@ start:
             else:
                 raise RuntimeError('invalid envar name specified for a action event')
         else:
-            event_filename = event_spec.event_name.replace('_', '-')
+            event_filename = event_spec.name.replace('_', '-')
             event_dir = 'hooks'
 
         self._call_event(Path(event_dir, event_filename), env)
@@ -383,7 +383,7 @@ start:
         for event_spec, expected_event_data in events_under_test:
             state = self._simulate_event(event_spec)
 
-            state_key = 'on_' + event_spec.event_name
+            state_key = 'on_' + event_spec.name
             handled_events = state.get(state_key, [])
 
             # Make sure that a handler for that event was called once.
@@ -394,9 +394,9 @@ start:
 
             self.assertEqual(state['observed_event_types'], [event_spec.event_type])
 
-            if event_spec.event_name in expected_event_data:
-                self.assertEqual(state[event_spec.event_name + '_data'],
-                                 expected_event_data[event_spec.event_name])
+            if event_spec.name in expected_event_data:
+                self.assertEqual(state[event_spec.name + '_data'],
+                                 expected_event_data[event_spec.name])
 
     def test_event_not_implemented(self):
         """Make sure events without implementation do not cause non-zero exit.
@@ -511,7 +511,7 @@ class TestMainWithNoDispatch(TestMain, unittest.TestCase):
         }
 
         def _assess_event_links(event_spec):
-            self.assertTrue(self.hooks_dir / event_spec.event_name in self.hooks_dir.iterdir())
+            self.assertTrue(self.hooks_dir / event_spec.name in self.hooks_dir.iterdir())
             for event_hook in all_event_hooks:
                 self.assertTrue((self.JUJU_CHARM_DIR / event_hook).exists(),
                                 'Missing hook: ' + event_hook)
@@ -569,7 +569,7 @@ class TestMainWithDispatch(TestMain, unittest.TestCase):
         }
 
         def _assess_event_links(event_spec):
-            self.assertNotIn(self.hooks_dir / event_spec.event_name, self.hooks_dir.iterdir())
+            self.assertNotIn(self.hooks_dir / event_spec.name, self.hooks_dir.iterdir())
             for event_hook in all_event_hooks:
                 self.assertFalse((self.JUJU_CHARM_DIR / event_hook).exists(),
                                  'Spurious hook: ' + event_hook)
@@ -613,7 +613,7 @@ class TestMainWithDispatch(TestMain, unittest.TestCase):
         self.assertEqual(self.stdout.read(), b'')
         calls = fake_script_calls(self)
         self.assertEqual(len(calls), 1, 'unexpect call result: {}'.format(calls))
-        self.assertEqual(len(calls[0]), 4,  'unexpect call result: {}'.format(calls[0]))
+        self.assertEqual(len(calls[0]), 4, 'unexpect call result: {}'.format(calls[0]))
         self.assertEqual(
             calls[0][:3],
             ['juju-log', '--log-level', 'WARNING']
@@ -628,13 +628,13 @@ class TestMainWithDispatch(TestMain, unittest.TestCase):
         hook_path = self.hooks_dir / 'install'
         for ((rel, ind), path) in {
                 # relative and indirect
-                (True, True):   Path('../dispatch'),
+                (True, True): Path('../dispatch'),
                 # relative and direct
-                (True, False):  Path(self.charm_exec_path),
+                (True, False): Path(self.charm_exec_path),
                 # absolute and direct
                 (False, False): (self.hooks_dir / self.charm_exec_path).resolve(),
                 # absolute and indirect
-                (False, True):  self.JUJU_CHARM_DIR / 'dispatch',
+                (False, True): self.JUJU_CHARM_DIR / 'dispatch',
         }.items():
             with self.subTest(path=path, rel=rel, ind=ind):
                 # sanity check

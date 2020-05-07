@@ -36,7 +36,7 @@ class ActionEvent(EventBase):
     """
 
     def defer(self):
-        """Action events are not deferable like other events.
+        """Action events are not deferrable like other events.
 
         This is because an action runs synchronously and the user is waiting for the result.
         """
@@ -87,7 +87,7 @@ class ActionEvent(EventBase):
 class InstallEvent(HookEvent):
     """Represents the `install` hook from Juju.
 
-    It's riggered by `CharmBase.on.install`.
+    It's triggered by `CharmBase.on.install`.
     """
 
     pass
@@ -246,6 +246,9 @@ class RelationEvent(HookEvent):
         if the relation event was triggered as an Application level event
     """
 
+    events = []
+    name = None
+
     def __init__(self, handle, relation, app=None, unit=None):
         """Charm authors should not directly instantiate RelationEvent.
 
@@ -307,7 +310,10 @@ class RelationJoinedEvent(RelationEvent):
     with an application that already had units.)
     """
 
-    pass
+    name = 'joined'
+
+
+RelationEvent.events.append(RelationJoinedEvent)
 
 
 class RelationChangedEvent(RelationEvent):
@@ -320,7 +326,10 @@ class RelationChangedEvent(RelationEvent):
     new information.
     """
 
-    pass
+    name = 'changed'
+
+
+RelationEvent.events.append(RelationChangedEvent)
 
 
 class RelationDepartedEvent(RelationEvent):
@@ -334,7 +343,10 @@ class RelationDepartedEvent(RelationEvent):
     going away.
     """
 
-    pass
+    name = 'departed'
+
+
+RelationEvent.events.append(RelationDepartedEvent)
 
 
 class RelationBrokenEvent(RelationEvent):
@@ -347,13 +359,17 @@ class RelationBrokenEvent(RelationEvent):
     that the relationship has been fully terminated.
     """
 
-    pass
+    name = 'broken'
+
+
+RelationEvent.events.append(RelationDepartedEvent)
 
 
 class StorageEvent(HookEvent):
     """Base class representing Storage related events."""
 
-    pass
+    events = []
+    name = None
 
 
 class StorageAttachedEvent(StorageEvent):
@@ -364,7 +380,10 @@ class StorageAttachedEvent(StorageEvent):
     Called when new storage is available for the charm to use.
     """
 
-    pass
+    name = 'attached'
+
+
+StorageEvent.events.append(StorageAttachedEvent)
 
 
 class StorageDetachingEvent(StorageEvent):
@@ -375,7 +394,10 @@ class StorageDetachingEvent(StorageEvent):
     Called when storage a charm has been using is going away.
     """
 
-    pass
+    name = 'detaching'
+
+
+StorageEvent.events.append(StorageDetachingEvent)
 
 
 class CharmEvents(ObjectEvents):
@@ -420,15 +442,13 @@ class CharmBase(Object):
 
         for relation_name in self.framework.meta.relations:
             relation_name = relation_name.replace('-', '_')
-            self.on.define_event(relation_name + '_relation_joined', RelationJoinedEvent)
-            self.on.define_event(relation_name + '_relation_changed', RelationChangedEvent)
-            self.on.define_event(relation_name + '_relation_departed', RelationDepartedEvent)
-            self.on.define_event(relation_name + '_relation_broken', RelationBrokenEvent)
+            for event in RelationEvent.events:
+                self.on.define_event("{}_relation_{}".format(relation_name, event.name))
 
         for storage_name in self.framework.meta.storages:
             storage_name = storage_name.replace('-', '_')
-            self.on.define_event(storage_name + '_storage_attached', StorageAttachedEvent)
-            self.on.define_event(storage_name + '_storage_detaching', StorageDetachingEvent)
+            for event in StorageEvent.events:
+                self.on.define_event("{}_storage_{}".format(relation_name, event.name))
 
         for action_name in self.framework.meta.actions:
             action_name = action_name.replace('-', '_')
