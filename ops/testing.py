@@ -571,6 +571,18 @@ class Harness:
             self._backend._calls.clear()
         return calls
 
+    def run_action(self, action_name: str, params: typing.Mapping[str, str]) -> 'ActionResult':
+        """Trigger an action for the charm.
+
+        This runs the action with the given parameters, and return the result of running
+        the action.
+        Args:
+            action_name:
+            params:
+
+        Returns:
+        """
+
 
 def _record_calls(cls):
     """Replace methods on cls with methods that record that they have been called.
@@ -600,6 +612,20 @@ class _ResourceEntry:
 
     def __init__(self, resource_name):
         self.name = resource_name
+
+
+class ActionResult:
+    """The result of running an action.
+
+    This tracks the parameters passed to the action, along with the the results that are fed
+    back from the action.
+    """
+
+    def __init__(self, params: typing.Mapping[str, typing.Any]):
+        self.params = params
+        self.results = {}
+        self.failed = False
+        self.log = []
 
 
 @_record_calls
@@ -632,6 +658,7 @@ class _TestingModelBackend:
         self._unit_status = {'status': 'maintenance', 'message': ''}
         self._workload_version = None
         self._resource_dir = None
+        self._action_context = None
 
     def _cleanup(self):
         if self._resource_dir is not None:
@@ -735,10 +762,15 @@ class _TestingModelBackend:
         raise NotImplementedError(self.storage_add)
 
     def action_get(self):
-        raise NotImplementedError(self.action_get)
+        if self._action_context is None:
+            raise RuntimeError("action_get called outside of an active action event")
+        return self._action_context.params
 
     def action_set(self, results):
-        raise NotImplementedError(self.action_set)
+        if self._action_context is None:
+            raise RuntimeError("action_set called outside of an active action event")
+        res = dict((str(k), str(v)) for k, v in results.items())
+        self._action_context.results.update(res)
 
     def action_log(self, message):
         raise NotImplementedError(self.action_log)

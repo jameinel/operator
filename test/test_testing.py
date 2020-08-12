@@ -23,6 +23,7 @@ import yaml
 
 from ops.charm import (
     CharmBase,
+    ActionEvent,
     RelationEvent,
 )
 from ops.framework import (
@@ -35,7 +36,10 @@ from ops.model import (
     ModelError,
     RelationNotFoundError,
 )
-from ops.testing import Harness
+from ops.testing import (
+    ActionResult,
+    Harness,
+)
 
 
 class TestHarness(unittest.TestCase):
@@ -1482,3 +1486,71 @@ class TestTestingModelBackend(unittest.TestCase):
         self.assertIn(
             "units/unit-test-app-0/resources/foo: resource#test-app/foo not found",
             str(cm.exception))
+
+    def test_action_methods_called_outside_action(self):
+        harness = Harness(ActionCharm, meta='''
+            name: test-app
+            ''', actions=ActionCharm.action_yaml)
+        self.addCleanup(harness.cleanup)
+        backend = harness._backend
+        with self.assertRaises(RuntimeError):
+            backend.action_get()
+        with self.assertRaises(RuntimeError):
+            backend.action_set({'foo': 'bar'})
+        with self.assertRaises(RuntimeError):
+            backend.action_log('log message')
+        with self.assertRaises(RuntimeError):
+            backend.action_fail('message')
+
+    def test_action_get_with_active_action(self):
+        harness = Harness(ActionCharm, meta='''
+            name: test-app
+            ''', actions=ActionCharm.action_yaml)
+        self.addCleanup(harness.cleanup)
+        backend = harness._backend
+        ctx = ActionResult({'boo': False, 's': 'content'})
+        backend._action_context = ctx
+        self.assertEqual(backend.action_get(), {'boo': False, 's': 'content'})
+
+    def test_action_set_with_active_action(self):
+        harness = Harness(ActionCharm, meta='''
+            name: test-app
+            ''', actions=ActionCharm.action_yaml)
+        self.addCleanup(harness.cleanup)
+        backend = harness._backend
+        ctx = ActionResult({'boo': False, 's': 'content'})
+        backend._action_context = ctx
+        backend.action_set({'a': 2})
+        # Note that we cast the '2' to a str here.
+        # This is because arguments are passed via 'key=value' command line arguments,
+        # and the type information is all lost. So we make sure to preserve 'all results are
+        # strings' so developers don't get confused.
+        self.assertEqual(ctx.results, {'a': '2'})
+        backend.action_set({'2': 3})
+        self.assertEqual(ctx.results, {'a': '2', '2': '3'})
+        # We also cast the keys, and if there is a collision, new keys always overwrite
+        backend.action_set({2: 4})
+        self.assertEqual(ctx.results, {'a': '2', '2': '4'})
+
+
+class ActionCharm(CharmBase):
+    """A charm that includes actions that can be called."""
+
+    action_yaml = textwrap.dedent('''\
+    foo:
+        description: does some foo
+        params:
+          boo:
+            type: boolean
+            default: false
+          s:
+            type: str
+            default: value
+    ''')
+
+    def __init__(self, framework):
+        super().__init__(framework)
+        self.framework.observe(self.on.foo_action, self._foo_action)
+
+    def _foo_action(self, event: ActionEvent):
+        pass
